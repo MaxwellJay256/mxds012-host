@@ -144,6 +144,12 @@ class SerialReader(QThread):
         """
         try:
             channels = parse_adc_frame(packet)
+            if channels is None:
+                raise ValueError("ADC frame parse returned no data")
+            # Apply sign inversion once at the data source so downstream
+            # consumers (plotting/recording) stay consistent.
+            inverted_channels = [[-sample for sample in channel] for channel in channels]
+            # return inverted_channels
             return channels
         except ValueError as e:
             self.invalid_packets += 1

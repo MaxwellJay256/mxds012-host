@@ -11,6 +11,8 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QSizePolicy, QGridLayout
 class PlotPanel(QWidget):
     def __init__(self, parent=None, m_mode_width: int = 512):
         super().__init__(parent)
+        self._a_mode_y_min = -497.0
+        self._a_mode_y_max = 527.0
         self._plots: List[pg.PlotWidget] = []
         self._curves = []
         self._m_mode_images = []  # M-Mode image displays
@@ -52,6 +54,8 @@ class PlotPanel(QWidget):
 
             # Disable auto Y scaling; we'll set symmetric range around 0
             plot_widget.enableAutoRange(axis='y', enable=False)
+            plot_widget.getViewBox().setDefaultPadding(0.0)
+            plot_widget.setYRange(self._a_mode_y_min, self._a_mode_y_max)
 
             # Y=0 baseline
             zero_line = pg.InfiniteLine(
@@ -94,30 +98,30 @@ class PlotPanel(QWidget):
             self._plots.append(plot_widget)
             self._curves.append(curve)
 
-            # M-Mode (time-scrolling 2D image)
-            m_mode_plot = pg.PlotWidget()
-            m_mode_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            m_mode_plot.setTitle(f"Channel {idx + 1} M-Mode", color="#000000", size="11pt")
-            m_mode_plot.setLabel("bottom", "Time Frame", size="9pt")
-            m_mode_plot.setLabel("left", "Sample Index", size="9pt")
+            # # M-Mode (time-scrolling 2D image)
+            # m_mode_plot = pg.PlotWidget()
+            # m_mode_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            # m_mode_plot.setTitle(f"Channel {idx + 1} M-Mode", color="#000000", size="11pt")
+            # m_mode_plot.setLabel("bottom", "Time Frame", size="9pt")
+            # m_mode_plot.setLabel("left", "Sample Index", size="9pt")
 
-            # Initialize ring buffer: (sample_depth, time_frames)
-            m_mode_buffer = np.zeros((128, m_mode_width), dtype=np.float32)
-            self._m_mode_buffers.append(m_mode_buffer)
-            self._current_sample_depths[idx] = 128
+            # # Initialize ring buffer: (sample_depth, time_frames)
+            # m_mode_buffer = np.zeros((128, m_mode_width), dtype=np.float32)
+            # self._m_mode_buffers.append(m_mode_buffer)
+            # self._current_sample_depths[idx] = 128
 
-            # Create image item
-            image_item = pg.ImageItem(image=m_mode_buffer)
-            # Color map (viridis)
-            colormap = pg.colormap.get('viridis')
-            lut = colormap.getLookupTable(start=0, stop=255)
-            image_item.setLookupTable(lut, update=True)
-            image_item.setLevels(self._m_mode_levels[idx])
-            m_mode_plot.addItem(image_item)
+            # # Create image item
+            # image_item = pg.ImageItem(image=m_mode_buffer)
+            # # Color map (viridis)
+            # colormap = pg.colormap.get('viridis')
+            # lut = colormap.getLookupTable(start=0, stop=255)
+            # image_item.setLookupTable(lut, update=True)
+            # image_item.setLevels(self._m_mode_levels[idx])
+            # m_mode_plot.addItem(image_item)
 
-            channel_layout.addWidget(m_mode_plot)
-            self._m_mode_images.append(image_item)
-            self._m_mode_plots.append(m_mode_plot)
+            # channel_layout.addWidget(m_mode_plot)
+            # self._m_mode_images.append(image_item)
+            # self._m_mode_plots.append(m_mode_plot)
 
             # Add to grid
             row, col = grid_positions[idx]
@@ -180,7 +184,7 @@ class PlotPanel(QWidget):
         channel_stats = []
         for idx, data in enumerate(frames):
             if data:
-                raw_values = np.asarray(data, dtype=np.float32)
+                raw_values = np.asarray(-np.array(data), dtype=np.float32)
                 mean_value = float(np.mean(raw_values))
                 centered_values = raw_values - mean_value
                 centered_frames[idx] = centered_values
@@ -196,10 +200,12 @@ class PlotPanel(QWidget):
                 global_peak = max(global_peak, local_peak)
                 global_right_edge = max(global_right_edge, max(0, raw_values.size - 1))
                 channel_stats.append(
-                    f"CH{idx + 1}(mean={mean_value:.2f}, max={max_value:.2f}, min={min_value:.2f}, diff={diff_value:.2f})"
+                    f"CH{idx + 1}"
+                    # f"CH{idx + 1}(mean={mean_value:.2f}, max={max_value:.2f}, min={min_value:.2f}, diff={diff_value:.2f})"
                 )
                 self._plots[idx].setTitle(
-                    f"Channel {idx + 1} A-Mode | mean={mean_value:.2f}, max={max_value:.2f}, min={min_value:.2f}, diff={diff_value:.2f}",
+                    f"Channel {idx + 1} A-Mode",
+                    # f"Channel {idx + 1} A-Mode | mean={mean_value:.2f}, max={max_value:.2f}, min={min_value:.2f}, diff={diff_value:.2f}",
                     color="#000000",
                     size="10pt"
                 )
@@ -211,13 +217,12 @@ class PlotPanel(QWidget):
                     size="10pt"
                 )
 
-        # Apply uniform scaling
-        global_y_limit = global_peak * 1.05
+        # Keep A-Mode Y-axis fixed for all channels
         global_right_edge = max(1, global_right_edge)
 
         for idx, centered_data in enumerate(centered_frames):
             if centered_data is None:
-                self._plots[idx].setYRange(-global_y_limit, global_y_limit)
+                self._plots[idx].setYRange(self._a_mode_y_min, self._a_mode_y_max)
                 self._plots[idx].setXRange(0, global_right_edge)
                 self._a_mode_x0_lines[idx].setPos(0)
                 self._a_mode_x_end_lines[idx].setPos(0)
@@ -230,7 +235,7 @@ class PlotPanel(QWidget):
             x_values = list(range(data_len))
             self._curves[idx].setData(x_values, centered_data)
 
-            self._plots[idx].setYRange(-global_y_limit, global_y_limit)
+            self._plots[idx].setYRange(self._a_mode_y_min, self._a_mode_y_max)
 
             # X-axis markers
             farthest_x = max(0, data_len - 1)
@@ -240,23 +245,23 @@ class PlotPanel(QWidget):
 
             self._plots[idx].setXRange(0, global_right_edge)
             
-            # Check if M-Mode buffer depth needs adjustment
-            if data_len != self._current_sample_depths[idx]:
-                self._resize_m_mode_buffer(idx, data_len)
+            # # Check if M-Mode buffer depth needs adjustment
+            # if data_len != self._current_sample_depths[idx]:
+            #     self._resize_m_mode_buffer(idx, data_len)
             
-            # Update M-Mode: write new data to ring buffer
-            raw_data = frames[idx]
-            buffer = self._m_mode_buffers[idx]
-            write_pos = self._m_mode_indices[idx]
+            # # Update M-Mode: write new data to ring buffer
+            # raw_data = frames[idx]
+            # buffer = self._m_mode_buffers[idx]
+            # write_pos = self._m_mode_indices[idx]
             
-            # Write current frame to ring buffer column
-            buffer[:data_len, write_pos] = raw_data[:data_len]
+            # # Write current frame to ring buffer column
+            # buffer[:data_len, write_pos] = raw_data[:data_len]
             
-            # Advance write position (circular)
-            self._m_mode_indices[idx] = (write_pos + 1) % self._m_mode_width
+            # # Advance write position (circular)
+            # self._m_mode_indices[idx] = (write_pos + 1) % self._m_mode_width
 
-            # Update color range
-            self._update_m_mode_levels(idx)
+            # # Update color range
+            # self._update_m_mode_levels(idx)
             
-            # Update display
-            self._m_mode_images[idx].setImage(buffer, autoLevels=False, levels=self._m_mode_levels[idx])
+            # # Update display
+            # self._m_mode_images[idx].setImage(buffer, autoLevels=False, levels=self._m_mode_levels[idx])
