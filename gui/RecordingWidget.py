@@ -47,6 +47,10 @@ class RecordingWidget(QWidget):
     startSerialRequested = pyqtSignal(str)
     stopSerialRequested = pyqtSignal()
     infoRequested = pyqtSignal(str, str)
+    RECORD_SOURCE_KEY = "Recording/DataSource"
+    RECORD_DURATION_KEY = "Recording/DurationSeconds"
+    RECORD_SOURCE_RAW = "raw"
+    RECORD_SOURCE_PROCESSED = "processed"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -155,8 +159,9 @@ class RecordingWidget(QWidget):
         rootLayout.addWidget(paramGroup)
 
         outputGroup = QGroupBox("录制输出")
-        outputLayout = QVBoxLayout(outputGroup)
+        outputLayout = QHBoxLayout(outputGroup)
         outputLayout.setContentsMargins(12, 10, 12, 10)
+        outputLayout.setSpacing(10)
 
         self.recordDirButton = ToolButton(FluentIcon.FOLDER)
         self.outputPathEdit = FolderPathLineEdit()
@@ -166,12 +171,20 @@ class RecordingWidget(QWidget):
         self.filenameEdit = LineEdit()
         self.filenameEdit.setPlaceholderText("输入文件名 (不需要 .txt)")
 
-        recordPathRow = QHBoxLayout()
-        recordPathRow.setSpacing(10)
-        recordPathRow.addWidget(self.recordDirButton)
-        recordPathRow.addWidget(self.outputPathEdit, 2)
-        recordPathRow.addWidget(self.filenameEdit, 1)
-        outputLayout.addLayout(recordPathRow)
+        outputLayout.addWidget(self.recordDirButton)
+        outputLayout.addWidget(self.outputPathEdit, 2)
+        outputLayout.addWidget(self.filenameEdit, 1)
+
+        self.recordDataSourceCombo = ComboBox(self)
+        self.recordDataSourceCombo.addItem("原始数据", self.RECORD_SOURCE_RAW)
+        self.recordDataSourceCombo.addItem("预处理数据", self.RECORD_SOURCE_PROCESSED)
+        self.recordDataSourceCombo.setFixedWidth(150)
+        outputLayout.addWidget(self.recordDataSourceCombo)
+        self.recordDataSourceWarningLabel = BodyLabel("当前选择“预处理数据”，但实时预处理未开启。若继续录制将导致数据源不匹配。")
+        self.recordDataSourceWarningLabel.setStyleSheet("color: #c62828; font-weight: 600;")
+        self.recordDataSourceWarningLabel.setVisible(False)
+        outputLayout.addWidget(self.recordDataSourceWarningLabel, 1)
+
         rootLayout.addWidget(outputGroup)
 
         self.recordContinuousStartButton = PushButton("开始连续录制")
@@ -228,11 +241,14 @@ class RecordingWidget(QWidget):
         self.portCombo.currentIndexChanged.connect(self.onPortSelectionChanged)
         self.scanFreqSpin.valueChanged.connect(self.onScanFreqChanged)
         self.sampleDepthSpin.valueChanged.connect(self.onSampleDepthChanged)
+        self.recordDurationSpin.valueChanged.connect(self.onRecordDurationChanged)
         self.filenameEdit.editingFinished.connect(self.onFilenameEditingFinished)
+        self.recordDataSourceCombo.currentIndexChanged.connect(self.onRecordDataSourceChanged)
 
         self.loadSettings()
         self.refreshPorts()
         self.updateRecordingUiState()
+        self._updateRecordDataSourceWarning()
 
     def loadSettings(self):
         self._isApplyingSettings = True
@@ -241,11 +257,17 @@ class RecordingWidget(QWidget):
             sampleDepth = self.settings.value("Hardware/SampleDepth", 128, type=int)
             outputDir = self.settings.value("Recording/OutputDirectory", "", type=str)
             filename = self.settings.value("Recording/FileName", "", type=str)
+            recordDuration = self.settings.value(self.RECORD_DURATION_KEY, 5, type=int)
+            recordDataSource = self.settings.value(self.RECORD_SOURCE_KEY, self.RECORD_SOURCE_PROCESSED, type=str)
             self._pendingLastPort = self.settings.value("Serial/LastPort", "", type=str)
 
             self.scanFreqSpin.setValue(max(1, min(60, scanFreq)))
             self.sampleDepthSpin.setValue(max(1, min(1024, sampleDepth)))
+            self.recordDurationSpin.setValue(max(1, min(60, recordDuration)))
             self.filenameEdit.setText(filename)
+            sourceIndex = self.recordDataSourceCombo.findData(recordDataSource)
+            if sourceIndex >= 0:
+                self.recordDataSourceCombo.setCurrentIndex(sourceIndex)
 
             if outputDir and Path(outputDir).exists():
                 self.recordOutputDir = outputDir
@@ -269,6 +291,8 @@ class RecordingWidget(QWidget):
         self._saveSetting("Hardware/SampleDepth", int(self.sampleDepthSpin.value()))
         self._saveSetting("Recording/OutputDirectory", self.recordOutputDir.strip())
         self._saveSetting("Recording/FileName", self.filenameEdit.text().strip())
+        self._saveSetting(self.RECORD_DURATION_KEY, int(self.recordDurationSpin.value()))
+        self._saveSetting(self.RECORD_SOURCE_KEY, self.getRecordDataSource())
 
     def onPortSelectionChanged(self, _index: int):
         if self._isApplyingSettings:
@@ -291,6 +315,43 @@ class RecordingWidget(QWidget):
         if self._isApplyingSettings:
             return
         self._saveSetting("Recording/FileName", self.filenameEdit.text().strip())
+
+    def onRecordDurationChanged(self, value: int):
+        if self._isApplyingSettings:
+            return
+        self._saveSetting(self.RECORD_DURATION_KEY, int(value))
+
+    def onRecordDataSourceChanged(self, _index: int):
+        if self._isApplyingSettings:
+            return
+        self._saveSetting(self.RECORD_SOURCE_KEY, self.getRecordDataSource())
+        self._updateRecordDataSourceWarning()
+
+    def getRecordDataSource(self) -> str:
+        return self.recordDataSourceCombo.currentData() or self.RECORD_SOURCE_PROCESSED
+
+    def _isRealtimePreprocessEnabled(self) -> bool:
+        try:
+            from gui.MainWindow import MainWindow
+            mainWindow = self.window()
+            if isinstance(mainWindow, MainWindow):
+                return bool(mainWindow.plotPanel.isRealtimePreprocessEnabled())
+        except Exception:
+            pass
+        return False
+
+    def _shouldWarnProcessedSourceWithoutPreprocess(self) -> bool:
+        return (
+            # self.getRecordDataSource() == self.RECORD_SOURCE_PROCESSED
+            self.recordDataSourceCombo.currentData() == self.RECORD_SOURCE_PROCESSED
+            and not self._isRealtimePreprocessEnabled()
+        )
+
+    def _updateRecordDataSourceWarning(self):
+        self.recordDataSourceWarningLabel.setVisible(self._shouldWarnProcessedSourceWithoutPreprocess())
+
+    def onRealtimePreprocessSwitchChanged(self, _enabled: bool):
+        self._updateRecordDataSourceWarning()
 
     def showInfo(self, message: str, level: str = "info"):
         self.infoRequested.emit(message, level)
@@ -446,6 +507,11 @@ class RecordingWidget(QWidget):
             self.showInfo("请先连接串口", "warning")
             return
 
+        if self._shouldWarnProcessedSourceWithoutPreprocess():
+            self.showInfo("已选择预处理数据，但实时预处理未开启。请先开启“实时预处理”后再录制。", "warning")
+            self._updateRecordDataSourceWarning()
+            return
+
         state = self.getRecordingState()
         if state == RecordingService.STATE_ACTIVE_CONTINUOUS:
             self.showInfo("连续录制已在进行中", "warning")
@@ -484,6 +550,11 @@ class RecordingWidget(QWidget):
     def onRecordStartTimed(self):
         if not self.serialRunning:
             self.showInfo("请先连接串口", "warning")
+            return
+
+        if self._shouldWarnProcessedSourceWithoutPreprocess():
+            self.showInfo("已选择预处理数据，但实时预处理未开启。请先开启“实时预处理”后再录制。", "warning")
+            self._updateRecordDataSourceWarning()
             return
 
         selectedSeconds = int(self.recordDurationSpin.value())
@@ -561,7 +632,7 @@ class RecordingWidget(QWidget):
             self.updateFrameCounter()
             self.updateRecordingUiState()
 
-    def handleFrameReceived(self, channels):
+    def _handleRecordingChannels(self, channels):
         if not self.recordingService:
             return
 
@@ -592,6 +663,16 @@ class RecordingWidget(QWidget):
             self.showInfo(f"写入帧失败: {error}", "error")
             self.stopRecording()
 
+    def handleFrameReceived(self, channels):
+        if self.getRecordDataSource() != self.RECORD_SOURCE_PROCESSED:
+            return
+        self._handleRecordingChannels(channels)
+
+    def handleRawFrameReceived(self, channels):
+        if self.getRecordDataSource() != self.RECORD_SOURCE_RAW:
+            return
+        self._handleRecordingChannels(channels)
+
     def updateFrameCounter(self):
         self.frameCounterLabel.setText(f"已录制: {self.recordedFrameCount} 帧")
 
@@ -609,6 +690,8 @@ class RecordingWidget(QWidget):
         self.applyParamButton.setEnabled(self.serialRunning)
         self.scanFreqSpin.setEnabled(self.serialRunning)
         self.sampleDepthSpin.setEnabled(self.serialRunning)
+        self.recordDataSourceCombo.setEnabled(state == RecordingService.STATE_IDLE)
+        self._updateRecordDataSourceWarning()
 
     def onApplyParamClicked(self):
         """Handle apply parameter button click: send config to device and wait for confirmation."""

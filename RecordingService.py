@@ -4,6 +4,7 @@ Recording service: real-time TXT file writer for ADC frames.
 Handles file I/O, frame formatting, and frame counting.
 """
 from typing import List, Optional, TextIO
+import math
 
 from RecordingUtils import RecordingError
 
@@ -103,6 +104,22 @@ class RecordingService:
             return True
 
         raise RecordingError("Recording service is not active")
+
+    def _formatSampleValue(self, value) -> str:
+        """Format a sample value for recording while preserving meaningful precision."""
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+
+        if not math.isfinite(numeric_value):
+            return "0"
+
+        rounded = round(numeric_value)
+        if abs(numeric_value - rounded) < 1e-6:
+            return str(int(rounded))
+
+        return f"{numeric_value:.6f}".rstrip("0").rstrip(".")
     
     def writeFrame(self, frame_idx: int, channels: List[List[int]]) -> bool:
         """
@@ -131,7 +148,7 @@ class RecordingService:
             for ch_idx, data in enumerate(channels):
                 # Format: "F000123 CH1 val1 val2 val3 ..."
                 prefix = f"F{frame_idx:06d} CH{ch_idx + 1}"
-                values_str = " ".join(str(abs(int(v))) for v in data)
+                values_str = " ".join(self._formatSampleValue(v) for v in data)
                 line = f"{prefix} {values_str}\n"
                 self.file.write(line)
             

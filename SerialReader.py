@@ -24,6 +24,7 @@ from Protocol import (
     PKT_TYPE_POWER,
     PKT_TYPE_NOTIFY_CONFIG,
 )
+from utils.PreProcess import RealtimePreprocessor
 
 
 class SerialReader(QThread):
@@ -34,6 +35,7 @@ class SerialReader(QThread):
     Parsed channel data are emitted via the ``frameReady`` signal.
     """
     frameReady = pyqtSignal(list)
+    rawFrameReady = pyqtSignal(list)
     powerReady = pyqtSignal(dict)
     configReady = pyqtSignal(dict)
     statusChanged = pyqtSignal(str)
@@ -54,10 +56,13 @@ class SerialReader(QThread):
         # Outbound command queue
         self._send_queue = Queue()
         self._send_lock = threading.Lock()
+        self._state_lock = threading.Lock()
         self._last_config = {
             'scan_frequency_hz': 0,
             'sample_depth': 0,
         }
+        self._realtime_preprocess_enabled = False
+        self._preprocessor: Optional[RealtimePreprocessor] = None
 
     def setDebug(self, enabled: bool):
         """Enable/disable hex/raw logging."""
@@ -98,6 +103,14 @@ class SerialReader(QThread):
     def sendSetScanFreq(self, freq_hz: int):
         """Queue a configuration command while preserving the last known sample depth."""
         self.sendSetConfig(freq_hz, self._last_config['sample_depth'])
+
+    def setRealtimePreprocessEnabled(self, enabled: bool):
+        with self._state_lock:
+            self._realtime_preprocess_enabled = bool(enabled)
+
+    def isRealtimePreprocessEnabled(self) -> bool:
+        with self._state_lock:
+            return self._realtime_preprocess_enabled
 
 
     def run(self):
@@ -206,7 +219,7 @@ class SerialReader(QThread):
             except Empty:
                 break
 
-    def _processFrame(self, packet: bytes) -> Optional[List[List[int]]]:
+    def _processFrame(self, packet: bytes) -> Optional[List[List[float]]]:
         """
         Parse binary frame using protocol module.
         
@@ -224,8 +237,20 @@ class SerialReader(QThread):
                 channels = parseADCFrame(packet)
                 if channels is None:
                     raise ValueError("ADC frame parse returned no data")
-                # Normalize ADC samples once at the source so plotting and recording stay consistent.
-                return [[abs(int(sample)) for sample in channel] for channel in channels]
+                raw_channels = [[float(abs(int(sample))) for sample in channel] for channel in channels]
+                self.rawFrameReady.emit(raw_channels)
+
+                if not self.isRealtimePreprocessEnabled():
+                    return raw_channels
+
+                if self._preprocessor is None:
+                    self._preprocessor = RealtimePreprocessor()
+
+                try:
+                    return self._preprocessor.process(raw_channels)
+                except Exception as preprocess_error:
+                    self.errorOccurred.emit(f"实时预处理失败，已回退原始数据: {preprocess_error}")
+                    return raw_channels
 
             if pkt_type == PKT_TYPE_POWER:
                 power_data = parsePowerFrame(packet)

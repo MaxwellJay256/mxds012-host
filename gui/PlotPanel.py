@@ -5,11 +5,18 @@ from typing import List, Optional
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QSizePolicy, QGridLayout
+from qfluentwidgets import BodyLabel, SwitchButton
+
+from SettingService import SettingService
 
 
 class PlotPanel(QWidget):
+    preprocessToggled = pyqtSignal(bool)
+
+    PREPROCESS_ENABLED_KEY = "Plot/RealtimePreprocessEnabled"
+
     def __init__(self, parent=None, m_mode_width: int = 512):
         super().__init__(parent)
         self._a_mode_x_min = 0.0
@@ -19,6 +26,7 @@ class PlotPanel(QWidget):
         self._mModeDefaultDepth = 128
         self._plots: List[pg.PlotWidget] = []
         self._curves = []
+        self._raw_curves = []
         self._m_mode_images = []
         self._m_mode_buffers: List[np.ndarray] = []
         self._m_mode_indices = [0] * 4  # 环形缓冲区写入位置
@@ -47,11 +55,30 @@ class PlotPanel(QWidget):
         self._a_mode_zero_lines = []
         self._a_mode_y0_lines = []
         self._a_mode_y_end_lines = []
+        self._realtime_preprocess_enabled = False
         self._mModeTimeTicks = [[(0.0, "3s前"), (1.0, "2s前"), (2.0, "1s前"), (3.0, "0s当前")]]
 
-        grid_layout = QGridLayout(self)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(4, 4, 4, 4)
+        root_layout.setSpacing(8)
+
+        preprocess_row = QHBoxLayout()
+        preprocess_row.setContentsMargins(0, 0, 0, 0)
+        preprocess_row.setSpacing(8)
+        self._preprocessLabel = BodyLabel("实时预处理")
+        self._preprocessSwitch = SwitchButton(self)
+        self._loadRealtimePreprocessState()
+
+        self._preprocessSwitch.checkedChanged.connect(self._onPreprocessSwitchChanged)
+        preprocess_row.addWidget(self._preprocessLabel)
+        preprocess_row.addWidget(self._preprocessSwitch)
+        preprocess_row.addStretch()
+        root_layout.addLayout(preprocess_row)
+
+        grid_layout = QGridLayout()
         grid_layout.setContentsMargins(4, 4, 4, 4)
         grid_layout.setSpacing(8)
+        root_layout.addLayout(grid_layout, 1)
 
         channel_colors = ["#4e9a06", "#3465a4", "#c17d11", "#cc0000"]
         grid_positions = [(0, 0), (0, 1), (1, 0), (1, 1)]
@@ -161,17 +188,67 @@ class PlotPanel(QWidget):
             self._a_mode_y_end_lines.append(y_end_line)
 
             curve = plotWidget.plot(pen=pg.mkPen(channel_colors[idx], width=1.5))
+            raw_curve = plotWidget.plot(pen=pg.mkPen(channel_colors[idx], width=1.0, style=Qt.PenStyle.DashLine))
+            raw_curve.setVisible(self._realtime_preprocess_enabled)
 
             channelLayout.addWidget(mModeWidget, 1)
             channelLayout.addWidget(plotWidget, 0)
             channelContainerLayout.addWidget(channelContentWidget, 1)
             self._plots.append(plotWidget)
             self._curves.append(curve)
+            self._raw_curves.append(raw_curve)
 
             row, col = grid_positions[idx]
             grid_layout.addWidget(channelContainer, row, col)
 
         self._current_sample_depths = [self._mModeDefaultDepth] * 4
+        
+
+    def _onPreprocessSwitchChanged(self, enabled: bool):
+        SettingService.set_value(self.PREPROCESS_ENABLED_KEY, bool(enabled), sync=True)
+        self.setRealtimePreprocessEnabled(enabled, emit_signal=True)
+
+    def _loadRealtimePreprocessState(self):
+        enabled = SettingService.value(self.PREPROCESS_ENABLED_KEY, False, bool)
+        self.setRealtimePreprocessEnabled(bool(enabled), emit_signal=False)
+
+    def isRealtimePreprocessEnabled(self) -> bool:
+        return self._realtime_preprocess_enabled
+
+    def setRealtimePreprocessEnabled(self, enabled: bool, emit_signal: bool = False):
+        '''
+        切换是否启用实时预处理
+        '''
+        enabled = bool(enabled)
+        if self._realtime_preprocess_enabled == enabled:
+            return
+
+        self._realtime_preprocess_enabled = enabled
+        self._preprocessSwitch.blockSignals(True)
+        self._preprocessSwitch.setChecked(enabled)
+        self._preprocessSwitch.blockSignals(False)
+
+        for raw_curve in self._raw_curves:
+            raw_curve.setVisible(enabled)
+            if not enabled:
+                raw_curve.setData([], [])
+
+        if emit_signal:
+            self.preprocessToggled.emit(enabled)
+
+    def updateRawOverlay(self, frames: List[List[float]]):
+        if not self._realtime_preprocess_enabled:
+            return
+        if len(frames) != 4:
+            return
+
+        for idx, data in enumerate(frames):
+            values = np.asarray(data, dtype=np.float32).reshape(-1)
+            if values.size == 0:
+                self._raw_curves[idx].setData([], [])
+                continue
+            sample_indices = list(range(int(values.shape[0])))
+            self._raw_curves[idx].setData(values, sample_indices)
 
     def _buildColorMap(self, positions: List[float], colors: List[List[int]]) -> pg.ColorMap:
         positionArray = np.asarray(positions, dtype=np.float32)
@@ -267,10 +344,10 @@ class PlotPanel(QWidget):
         abs_frames: List[Optional[np.ndarray]] = [None] * 4
 
         for idx, data in enumerate(frames):
-            if data:
-                abs_values = np.abs(np.asarray(data, dtype=np.float32))
-                abs_frames[idx] = abs_values
-                global_sample_depth = max(global_sample_depth, int(abs_values.shape[0]))
+            values = np.asarray(data, dtype=np.float32).reshape(-1)
+            if values.size > 0:
+                abs_frames[idx] = values
+                global_sample_depth = max(global_sample_depth, int(values.shape[0]))
                 # self._plots[idx].setTitle(
                 #     f"Channel {idx + 1}",
                 #     color="#000000",

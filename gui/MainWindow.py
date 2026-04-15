@@ -7,6 +7,7 @@ import pyqtgraph as pg
 from PyQt5.QtWidgets import QWidget, QHBoxLayout
 from PyQt5.QtCore import QTimer
 from qfluentwidgets import (
+    FluentIcon,
     InfoBar,
     InfoBarPosition,
     Theme,
@@ -32,6 +33,7 @@ class MainWindow(QWidget):
         super().__init__()
         self.setWindowTitle("MXDS012 Host")
         self.resize(1920, 1080)
+        self.setWindowIcon(FluentIcon.CONNECT.icon())
 
         setTheme(Theme.LIGHT)
         setThemeColor("#e4360f")
@@ -56,6 +58,8 @@ class MainWindow(QWidget):
         self.recordingWidget.startSerialRequested.connect(self.startSerial)
         self.recordingWidget.stopSerialRequested.connect(self.stopSerial)
         self.recordingWidget.infoRequested.connect(self.onRecordingInfoRequested)
+        self.plotPanel.preprocessToggled.connect(self.onPlotPanelPreprocessToggled)
+        self.plotPanel.preprocessToggled.connect(self.recordingWidget.onRealtimePreprocessSwitchChanged)
 
         self._loadWindowSettings()
         self.themeListener.start()
@@ -85,8 +89,11 @@ class MainWindow(QWidget):
             return
 
         self.serialThread = SerialReader(port)
+        self.serialThread.setRealtimePreprocessEnabled(self.plotPanel.isRealtimePreprocessEnabled())
         self.serialThread.frameReady.connect(self.plotPanel.updatePlots)
+        self.serialThread.rawFrameReady.connect(self.plotPanel.updateRawOverlay)
         self.serialThread.frameReady.connect(self.recordingWidget.handleFrameReceived)
+        self.serialThread.rawFrameReady.connect(self.recordingWidget.handleRawFrameReceived)
         self.serialThread.powerReady.connect(self.recordingWidget.onPowerReady)
         self.serialThread.statusChanged.connect(lambda msg: self.showInfo(msg, InfoBarPosition.BOTTOM, "info"))
         self.serialThread.errorOccurred.connect(lambda msg: self.showInfo(msg, InfoBarPosition.BOTTOM, "error"))
@@ -96,6 +103,10 @@ class MainWindow(QWidget):
 
         self.serialThread.start()
         self.recordingWidget.onSerialStarted()
+
+    def onPlotPanelPreprocessToggled(self, enabled: bool):
+        if self.serialThread and self.serialThread.isRunning():
+            self.serialThread.setRealtimePreprocessEnabled(enabled)
 
     def stopSerial(self):
         self.recordingWidget.stopRecording()
