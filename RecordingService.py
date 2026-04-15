@@ -5,7 +5,7 @@ Handles file I/O, frame formatting, and frame counting.
 """
 from typing import List, Optional, TextIO
 
-from recording_utils import RecordingError
+from RecordingUtils import RecordingError
 
 
 class RecordingService:
@@ -31,7 +31,7 @@ class RecordingService:
         self.timed_target_frames = 0
         self.timed_written_frames = 0
 
-    def _open_new_file(self) -> None:
+    def _openNewFile(self) -> None:
         """Open a new file and reset counters for a new recording session."""
         self.file = open(self.output_path, 'w', encoding='utf-8')
         self.frame_count = 0
@@ -45,16 +45,16 @@ class RecordingService:
         Returns:
             True if successful, False otherwise (error reason in last_error).
         """
-        return self.start_continuous(new_session=True)
+        return self.startContinuous(new_session=True)
 
-    def start_continuous(self, new_session: bool = False) -> bool:
+    def startContinuous(self, new_session: bool = False) -> bool:
         """Start or resume continuous recording."""
         try:
             if new_session or self.state == self.STATE_IDLE or self.file is None:
                 if self.file:
                     self.file.close()
                     self.file = None
-                self._open_new_file()
+                self._openNewFile()
 
             self.is_active = True
             self.state = self.STATE_ACTIVE_CONTINUOUS
@@ -64,7 +64,7 @@ class RecordingService:
             self.state = self.STATE_IDLE
             raise RecordingError(f"无法打开文件 {self.output_path}: {e}")
 
-    def start_timed(self, target_frames: int, new_session: bool = False) -> bool:
+    def startTimed(self, target_frames: int, new_session: bool = False) -> bool:
         """
         Start or resume timed recording.
 
@@ -80,7 +80,7 @@ class RecordingService:
                 if self.file:
                     self.file.close()
                     self.file = None
-                self._open_new_file()
+                self._openNewFile()
 
             self.timed_target_frames = int(target_frames)
             self.timed_written_frames = 0
@@ -92,7 +92,7 @@ class RecordingService:
             self.state = self.STATE_IDLE
             raise RecordingError(f"无法打开文件 {self.output_path}: {e}")
 
-    def pause_pending_save(self) -> bool:
+    def pausePendingSave(self) -> bool:
         """Pause recording while keeping file handle open for potential resume."""
         if self.state in (self.STATE_ACTIVE_CONTINUOUS, self.STATE_ACTIVE_TIMED):
             self.is_active = False
@@ -104,7 +104,7 @@ class RecordingService:
 
         raise RecordingError("Recording service is not active")
     
-    def write_frame(self, frame_idx: int, channels: List[List[int]]) -> bool:
+    def writeFrame(self, frame_idx: int, channels: List[List[int]]) -> bool:
         """
         Write one frame of ADC data to file in 4-line format.
         
@@ -131,7 +131,7 @@ class RecordingService:
             for ch_idx, data in enumerate(channels):
                 # Format: "F000123 CH1 val1 val2 val3 ..."
                 prefix = f"F{frame_idx:06d} CH{ch_idx + 1}"
-                values_str = " ".join(str(int(v)) for v in data)
+                values_str = " ".join(str(abs(int(v))) for v in data)
                 line = f"{prefix} {values_str}\n"
                 self.file.write(line)
             
@@ -168,15 +168,15 @@ class RecordingService:
         except Exception as e:
             raise RecordingError(f"Error closing file: {e}")
     
-    def get_frame_count(self) -> int:
+    def getFrameCount(self) -> int:
         """Return number of frames written in current session."""
         return self.frame_count
 
-    def get_state(self) -> str:
+    def getState(self) -> str:
         """Return current recording state."""
         return self.state
 
-    def get_remaining_timed_frames(self) -> int:
+    def getRemainingTimedFrames(self) -> int:
         """Return remaining frames for the current timed round."""
         if self.state != self.STATE_ACTIVE_TIMED:
             return 0

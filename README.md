@@ -24,12 +24,12 @@ pip install PyQt5 PyQt-Fluent-Widgets pyqtgraph pyserial numpy
 | 模块 | 职责 |
 |------|------|
 | `main.py` | 应用入口（薄包装） |
-| `main_window.py` | 主窗口 UI、串口与录制控制、信号连接 |
-| `serial_reader.py` | 串口读取线程（QThread），帧解析协调 |
-| `protocol.py` | 二进制协议解析、校验、常量定义（纯函数） |
-| `plot_panel.py` | A-Mode 与 M-Mode 绘图组件 |
-| `recording_service.py` | 实时 TXT 写盘服务 |
-| `recording_utils.py` | 文件名/路径校验、目录创建等工具函数 |
+| `MainWindow.py` | 主窗口 UI、串口与录制控制、信号连接 |
+| `SerialReader.py` | 串口读取线程（QThread），帧解析协调 |
+| `Protocol.py` | 二进制协议解析、校验、常量定义（纯函数） |
+| `PlotPanel.py` | A-Mode 与 M-Mode 绘图组件 |
+| `RecordingService.py` | 实时 TXT 写盘服务 |
+| `RecordingUtils.py` | 文件名/路径校验、目录创建等工具函数 |
 
 ## 使用说明
 
@@ -119,6 +119,6 @@ python test_recording.py
 
 ## 扩展说明
 
-- **增加新的绘图模式**：编辑 `plot_panel.py`，扩展 `PlotPanel` 类。
-- **自定义录制格式**：编辑 `recording_service.py`，修改 `write_frame()` 方法。
-- **增加实时数据处理**：在 `main_window.py` 的 `_on_frame_received()` 中添加回调逻辑。
+- **增加新的绘图模式**：编辑 `PlotPanel.py`，扩展 `PlotPanel` 类。
+- **自定义录制格式**：编辑 `RecordingService.py`，修改 `writeFrame()` 方法。
+- **增加实时数据处理**：在 `MainWindow.py` 的 `_onFrameReceived()` 中添加回调逻辑。

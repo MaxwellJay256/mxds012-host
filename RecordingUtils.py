@@ -11,7 +11,7 @@ class RecordingError(Exception):
     pass
 
 
-def validate_filename(filename: str) -> Tuple[bool, str]:
+def validateFilename(filename: str) -> Tuple[bool, str]:
     """
     Validate filename for legality and safety.
     
@@ -51,7 +51,7 @@ def validate_filename(filename: str) -> Tuple[bool, str]:
     return True, ""
 
 
-def ensure_output_dir(directory: str) -> Tuple[bool, str]:
+def ensureOutputDir(directory: str) -> Tuple[bool, str]:
     """
     Check if directory exists, or create it recursively.
     
@@ -77,7 +77,7 @@ def ensure_output_dir(directory: str) -> Tuple[bool, str]:
         return False, f"无法创建或访问目录: {e}"
 
 
-def build_output_path(output_dir: str, filename: str) -> Tuple[str, str]:
+def buildOutputPath(output_dir: str, filename: str) -> Tuple[str, str]:
     """
     Build full output file path with .txt extension.
     
@@ -90,12 +90,12 @@ def build_output_path(output_dir: str, filename: str) -> Tuple[str, str]:
         If error_message is non-empty, full_path is None.
     """
     # Validate filename
-    valid, err_msg = validate_filename(filename)
+    valid, err_msg = validateFilename(filename)
     if not valid:
         return None, err_msg
     
     # Ensure directory exists
-    valid, err_msg = ensure_output_dir(output_dir)
+    valid, err_msg = ensureOutputDir(output_dir)
     if not valid:
         return None, err_msg
     
@@ -110,12 +110,12 @@ def build_output_path(output_dir: str, filename: str) -> Tuple[str, str]:
         return None, f"无法构建输出路径: {e}"
 
 
-def check_file_exists(file_path: str) -> bool:
+def checkFileExists(file_path: str) -> bool:
     """Check if file already exists."""
     return Path(file_path).exists()
 
 
-def safe_open_file(file_path: str, mode: str = 'w') -> Tuple[object, str]:
+def safeOpenFile(file_path: str, mode: str = 'w') -> Tuple[object, str]:
     """
     Safely open file for writing, with error handling.
     

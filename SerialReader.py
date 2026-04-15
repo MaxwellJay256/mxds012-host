@@ -1,27 +1,41 @@
 """
-Serial port reading thread with frame parsing.
+Serial port bidirectional communication service.
 
-Reads binary data from serial port, parses ADC frames, and emits signals.
+Reads binary data from the serial port, parses ADC frames, and emits signals.
+Also supports outbound command transmission.
 All parsing logic delegated to protocol module.
 """
 import struct
 from typing import List, Optional
+from queue import Queue, Empty
+import threading
 
 from PyQt5.QtCore import QThread, pyqtSignal
 from serial import Serial, SerialException
 from serial.tools import list_ports
 
-from protocol import parse_adc_frame
+from Protocol import (
+    parseADCFrame,
+    parsePowerFrame,
+    parseConfigFrame,
+    buildSetConfigCommand,
+    buildAcqConfigCommand,
+    PKT_TYPE_ADC,
+    PKT_TYPE_POWER,
+    PKT_TYPE_NOTIFY_CONFIG,
+)
 
 
 class SerialReader(QThread):
-    """Thread responsible for reading from the serial port and parsing frames.
+    """Bidirectional serial port service for ADC data and command transmission.
 
-    All I/O and parsing occur inside this QThread so the GUI thread remains
-    responsive even at high packet rates. Parsed channel data are emitted via
-    the ``frameReady`` signal and consumed by the UI.
+    Manages both inbound ADC frame reception and outbound command transmission.
+    All I/O and parsing occur inside this QThread so the GUI thread remains responsive.
+    Parsed channel data are emitted via the ``frameReady`` signal.
     """
     frameReady = pyqtSignal(list)
+    powerReady = pyqtSignal(dict)
+    configReady = pyqtSignal(dict)
     statusChanged = pyqtSignal(str)
     errorOccurred = pyqtSignal(str)
     stopped = pyqtSignal()
@@ -36,8 +50,16 @@ class SerialReader(QThread):
         self.discarded_bytes = 0
         self.invalid_packets = 0
         self.checksum_errors = 0
+        
+        # Outbound command queue
+        self._send_queue = Queue()
+        self._send_lock = threading.Lock()
+        self._last_config = {
+            'scan_frequency_hz': 0,
+            'sample_depth': 0,
+        }
 
-    def set_debug(self, enabled: bool):
+    def setDebug(self, enabled: bool):
         """Enable/disable hex/raw logging."""
         self.debug = enabled
 
@@ -51,6 +73,32 @@ class SerialReader(QThread):
             'invalid_packets': self.invalid_packets,
             'checksum_errors': self.checksum_errors,
         }
+
+    def sendSetConfig(self, scan_frequency_hz: int, sample_depth: int):
+        """Queue a full configuration command for transmission.
+        
+        Args:
+            scan_frequency_hz: Scan frequency in Hz (uint8 range).
+            sample_depth: Sample depth (uint16 range).
+        """
+        try:
+            packet = buildSetConfigCommand(scan_frequency_hz, sample_depth)
+            self._send_queue.put(packet)
+        except Exception as e:
+            self.errorOccurred.emit(f"无法构造配置设置命令: {e}")
+
+    def sendAcqConfig(self):
+        """Queue a 'query configuration' command for transmission."""
+        try:
+            packet = buildAcqConfigCommand()
+            self._send_queue.put(packet)
+        except Exception as e:
+            self.errorOccurred.emit(f"无法构造配置查询命令: {e}")
+
+    def sendSetScanFreq(self, freq_hz: int):
+        """Queue a configuration command while preserving the last known sample depth."""
+        self.sendSetConfig(freq_hz, self._last_config['sample_depth'])
+
 
     def run(self):
         try:
@@ -66,6 +114,9 @@ class SerialReader(QThread):
 
         try:
             while self._running:
+                # Try to send any pending commands
+                self._sendPending(serial_port)
+                
                 try:
                     chunk = serial_port.read(256)
                 except SerialException as exc:
@@ -80,7 +131,7 @@ class SerialReader(QThread):
 
                 buffer.extend(chunk)
 
-                # Parsing loop
+                # Parsing loop: extract complete frames from buffer
                 while len(buffer) >= 9:
                     header_idx = buffer.find(b'\xAA\x55')
                     if header_idx == -1:
@@ -107,8 +158,8 @@ class SerialReader(QThread):
                     # Read length field (little-endian)
                     payload_len = struct.unpack('<H', buffer[2:4])[0]
                     
-                    # Validate legality
-                    if payload_len > 16384 or (payload_len % 8) != 0:
+                    # Validate legality (ADC frames must have payload_len % 8 == 0; commands may not)
+                    if payload_len > 16384:
                         self.invalid_packets += 1
                         self.errorOccurred.emit(f"非法 payload_len={payload_len}")
                         # Discard header and continue searching
@@ -124,7 +175,7 @@ class SerialReader(QThread):
                     packet = bytes(buffer[:total_len])
                     del buffer[:total_len]
 
-                    processed = self._process_frame(packet)
+                    processed = self._processFrame(packet)
                     if processed is not None:
                         self.frameReady.emit(processed)
         finally:
@@ -136,21 +187,58 @@ class SerialReader(QThread):
     def stop(self):
         self._running = False
 
-    def _process_frame(self, packet: bytes) -> Optional[List[List[int]]]:
+    def _sendPending(self, serial_port: Serial):
+        """Send any pending commands from the queue.
+        
+        Args:
+            serial_port: Open serial port object.
         """
-        Parse binary ADC frame using protocol module.
+        while not self._send_queue.empty():
+            try:
+                packet = self._send_queue.get_nowait()
+                try:
+                    with self._send_lock:
+                        serial_port.write(packet)
+                    if self.debug:
+                        print(f"[DEBUG] sent {packet.hex()}")
+                except SerialException as e:
+                    self.errorOccurred.emit(f"串口写入错误: {e}")
+            except Empty:
+                break
+
+    def _processFrame(self, packet: bytes) -> Optional[List[List[int]]]:
+        """
+        Parse binary frame using protocol module.
         
         Returns None on error (error already emitted via errorOccurred signal).
+        Emits ADC data via frameReady, power data via powerReady, and config
+        notifications via configReady.
         """
         try:
-            channels = parse_adc_frame(packet)
-            if channels is None:
-                raise ValueError("ADC frame parse returned no data")
-            # Apply sign inversion once at the data source so downstream
-            # consumers (plotting/recording) stay consistent.
-            inverted_channels = [[-sample for sample in channel] for channel in channels]
-            # return inverted_channels
-            return channels
+            if len(packet) < 5:
+                raise ValueError("Packet too short for type field")
+            
+            pkt_type = packet[4]
+
+            if pkt_type == PKT_TYPE_ADC:
+                channels = parseADCFrame(packet)
+                if channels is None:
+                    raise ValueError("ADC frame parse returned no data")
+                # Normalize ADC samples once at the source so plotting and recording stay consistent.
+                return [[abs(int(sample)) for sample in channel] for channel in channels]
+
+            if pkt_type == PKT_TYPE_POWER:
+                power_data = parsePowerFrame(packet)
+                self.powerReady.emit(power_data)
+                return None
+
+            if pkt_type == PKT_TYPE_NOTIFY_CONFIG:
+                config_data = parseConfigFrame(packet)
+                self._last_config.update(config_data)
+                self.configReady.emit(config_data)
+                return None
+
+            raise ValueError(f"Unsupported packet type: 0x{pkt_type:02X}")
         except ValueError as e:
             self.invalid_packets += 1
             self.errorOccurred.emit(f"数据格式错误: {str(e)}")
