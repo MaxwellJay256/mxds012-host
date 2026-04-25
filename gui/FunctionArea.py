@@ -5,6 +5,7 @@ from qfluentwidgets import Pivot
 from .RecordingWidget import RecordingWidget
 from .PlaybackWidget import PlaybackWidget
 from .RealtimeAnalyzeWidget import RealtimeAnalyzeWidget
+from utils.PreprocessParamService import PreprocessParamService
 
 
 class FunctionArea(QWidget):
@@ -51,3 +52,12 @@ class FunctionArea(QWidget):
         if widget is None:
             return
         self.pivot.setCurrentItem(widget.objectName())
+
+        if widget is self.realtimeAnalyzeWidget:
+            main_window = self.window()
+            plot_panel = getattr(main_window, "plotPanel", None)
+            if plot_panel is not None:
+                plot_panel.setRealtimePreprocessEnabled(True, emit_signal=True)
+
+            preprocess_service = PreprocessParamService.get_instance()
+            preprocess_service.update_param("standardizePerFrame", True)

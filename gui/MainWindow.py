@@ -17,9 +17,10 @@ from qfluentwidgets import (
     isDarkTheme
 )
 
-from SerialReader import SerialReader
+from utils.SerialReader import SerialReader
+from utils.RTAnalyzer import RTAnalyzer
 from gui import FunctionArea, PlotPanel
-from SettingService import SettingService
+from utils.SettingService import SettingService
 
 
 class MainWindow(QWidget):
@@ -42,6 +43,8 @@ class MainWindow(QWidget):
         pg.setConfigOptions(antialias=True, background=None, foreground='#f0f0f0')
 
         self.serialThread: Optional[SerialReader] = None
+        self.rtAnalyzer = RTAnalyzer.getInstance()
+        self.rtAnalyzer.setEnabled(False)
 
         self._centralLayout = QHBoxLayout()
         self._centralLayout.setContentsMargins(24, 24, 24, 24)
@@ -51,15 +54,42 @@ class MainWindow(QWidget):
         self.plotPanel = PlotPanel(self)
         self.functionArea = FunctionArea(self)
         self.recordingWidget = self.functionArea.recordingWidget
+        self.realtimeAnalyzeWidget = self.functionArea.realtimeAnalyzeWidget
 
         self._centralLayout.addWidget(self.plotPanel, 1)
-        self._centralLayout.addWidget(self.functionArea, 1)
+        self._centralLayout.addWidget(self.functionArea, 0)
 
         self.recordingWidget.startSerialRequested.connect(self.startSerial)
         self.recordingWidget.stopSerialRequested.connect(self.stopSerial)
         self.recordingWidget.infoRequested.connect(self.onRecordingInfoRequested)
+        self.realtimeAnalyzeWidget.startSerialRequested.connect(self.startSerial)
+        self.realtimeAnalyzeWidget.stopSerialRequested.connect(self.stopSerial)
+        self.realtimeAnalyzeWidget.refreshPortsRequested.connect(self.recordingWidget.refreshPorts)
+        self.realtimeAnalyzeWidget.applyConfigRequested.connect(self.onRealtimeAnalyzeApplyConfig)
+        self.realtimeAnalyzeWidget.infoRequested.connect(self.onRecordingInfoRequested)
+        self.playbackWidget = self.functionArea.playbackWidget
+        self.playbackWidget.frameReady.connect(self.plotPanel.updatePlaybackFrames)
+        self.playbackWidget.rawFrameReady.connect(self.plotPanel.updateRawOverlay)
+        self.playbackWidget.configReady.connect(self.plotPanel.onConfigReady)
+        self.playbackWidget.infoRequested.connect(self.onRecordingInfoRequested)
         self.plotPanel.preprocessToggled.connect(self.onPlotPanelPreprocessToggled)
         self.plotPanel.preprocessToggled.connect(self.recordingWidget.onRealtimePreprocessSwitchChanged)
+        self.plotPanel.preprocessToggled.connect(self.playbackWidget.onRealtimePreprocessSwitchChanged)
+        self.playbackWidget.onRealtimePreprocessSwitchChanged(self.plotPanel.isRealtimePreprocessEnabled())
+
+        self.recordingWidget.portsUpdated.connect(self.realtimeAnalyzeWidget.updatePortOptions)
+        self.recordingWidget.serialStateChanged.connect(self.realtimeAnalyzeWidget.setSerialRunning)
+        self.recordingWidget.powerUpdated.connect(self.realtimeAnalyzeWidget.updatePowerData)
+        self.recordingWidget.configApplied.connect(self.realtimeAnalyzeWidget.onConfigReady)
+
+        self.realtimeAnalyzeWidget.setSerialRunning(self.recordingWidget.serialRunning)
+        self.realtimeAnalyzeWidget.onConfigReady(
+            {
+                "scan_frequency_hz": int(self.recordingWidget.paramCard.scanFreqSpin.value()),
+                "sample_depth": int(self.recordingWidget.paramCard.sampleDepthSpin.value()),
+            }
+        )
+        self.recordingWidget.refreshPorts()
 
         self._loadWindowSettings()
         self.themeListener.start()
@@ -90,9 +120,10 @@ class MainWindow(QWidget):
 
         self.serialThread = SerialReader(port)
         self.serialThread.setRealtimePreprocessEnabled(self.plotPanel.isRealtimePreprocessEnabled())
-        self.serialThread.frameReady.connect(self.plotPanel.updatePlots)
+        self.serialThread.plotFrameReady.connect(self.plotPanel.updatePlots)
         self.serialThread.rawFrameReady.connect(self.plotPanel.updateRawOverlay)
         self.serialThread.frameReady.connect(self.recordingWidget.handleFrameReceived)
+        self.serialThread.modelFrameReady.connect(self.rtAnalyzer.analyzeFrame)
         self.serialThread.rawFrameReady.connect(self.recordingWidget.handleRawFrameReceived)
         self.serialThread.powerReady.connect(self.recordingWidget.onPowerReady)
         self.serialThread.statusChanged.connect(lambda msg: self.showInfo(msg, InfoBarPosition.BOTTOM, "info"))
@@ -103,10 +134,12 @@ class MainWindow(QWidget):
 
         self.serialThread.start()
         self.recordingWidget.onSerialStarted()
+        self.rtAnalyzer.setEnabled(self.plotPanel.isRealtimePreprocessEnabled())
 
     def onPlotPanelPreprocessToggled(self, enabled: bool):
         if self.serialThread and self.serialThread.isRunning():
             self.serialThread.setRealtimePreprocessEnabled(enabled)
+        self.rtAnalyzer.setEnabled(bool(enabled) and self.serialThread is not None and self.serialThread.isRunning())
 
     def stopSerial(self):
         self.recordingWidget.stopRecording()
@@ -117,7 +150,13 @@ class MainWindow(QWidget):
         else:
             self.onSerialStopped()
 
+    def onRealtimeAnalyzeApplyConfig(self, scan_freq_hz: int, sample_depth: int):
+        self.recordingWidget.paramCard.scanFreqSpin.setValue(max(1, min(60, int(scan_freq_hz))))
+        self.recordingWidget.paramCard.sampleDepthSpin.setValue(max(1, min(1024, int(sample_depth))))
+        self.recordingWidget.onApplyParamClicked()
+
     def onSerialStopped(self):
+        self.rtAnalyzer.setEnabled(False)
         self.serialThread = None
         self.recordingWidget.onSerialStopped()
 
@@ -155,6 +194,8 @@ class MainWindow(QWidget):
         if self.serialThread and self.serialThread.isRunning():
             self.serialThread.stop()
             self.serialThread.wait(2000)
+
+        self.rtAnalyzer.setEnabled(False)
         
         self.themeListener.terminate()
         self.themeListener.deleteLater()

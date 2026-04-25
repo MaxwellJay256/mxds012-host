@@ -14,7 +14,7 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from serial import Serial, SerialException
 from serial.tools import list_ports
 
-from Protocol import (
+from utils.Protocol import (
     parseADCFrame,
     parsePowerFrame,
     parseConfigFrame,
@@ -25,6 +25,7 @@ from Protocol import (
     PKT_TYPE_NOTIFY_CONFIG,
 )
 from utils.PreProcess import RealtimePreprocessor
+from utils.PreprocessParamService import PreprocessParamService
 
 
 class SerialReader(QThread):
@@ -35,6 +36,8 @@ class SerialReader(QThread):
     Parsed channel data are emitted via the ``frameReady`` signal.
     """
     frameReady = pyqtSignal(list)
+    plotFrameReady = pyqtSignal(list)
+    modelFrameReady = pyqtSignal(list)
     rawFrameReady = pyqtSignal(list)
     powerReady = pyqtSignal(dict)
     configReady = pyqtSignal(dict)
@@ -63,6 +66,8 @@ class SerialReader(QThread):
         }
         self._realtime_preprocess_enabled = False
         self._preprocessor: Optional[RealtimePreprocessor] = None
+        self._preprocess_service = PreprocessParamService.get_instance()
+        self._preprocess_service.parametersChanged.connect(self._onPreprocessParamsChanged)
 
     def setDebug(self, enabled: bool):
         """Enable/disable hex/raw logging."""
@@ -111,6 +116,14 @@ class SerialReader(QThread):
     def isRealtimePreprocessEnabled(self) -> bool:
         with self._state_lock:
             return self._realtime_preprocess_enabled
+
+    def _onPreprocessParamsChanged(self, params):
+        if not self.isRealtimePreprocessEnabled():
+            return
+        try:
+            self._preprocessor = RealtimePreprocessor(params)
+        except Exception:
+            self._preprocessor = None
 
 
     def run(self):
@@ -241,15 +254,22 @@ class SerialReader(QThread):
                 self.rawFrameReady.emit(raw_channels)
 
                 if not self.isRealtimePreprocessEnabled():
+                    self.modelFrameReady.emit(raw_channels)
+                    self.plotFrameReady.emit(raw_channels)
                     return raw_channels
 
                 if self._preprocessor is None:
-                    self._preprocessor = RealtimePreprocessor()
+                    self._preprocessor = RealtimePreprocessor(self._preprocess_service.get_params_copy())
 
                 try:
-                    return self._preprocessor.process(raw_channels)
+                    model_channels, output_channels, display_channels = self._preprocessor.processForModelOutputAndDisplay(raw_channels)
+                    self.modelFrameReady.emit(model_channels)
+                    self.plotFrameReady.emit(display_channels)
+                    return output_channels
                 except Exception as preprocess_error:
                     self.errorOccurred.emit(f"实时预处理失败，已回退原始数据: {preprocess_error}")
+                    self.modelFrameReady.emit(raw_channels)
+                    self.plotFrameReady.emit(raw_channels)
                     return raw_channels
 
             if pkt_type == PKT_TYPE_POWER:

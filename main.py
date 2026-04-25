@@ -20,7 +20,7 @@ def main():
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps)
 
     app = QApplication(sys.argv)
-    app.setFont(QFont("Microsoft YaHei", 10))
+    app.setFont(QFont("Microsoft YaHei", 9))
     
     window = MainWindow()
     window.show()

@@ -10,27 +10,27 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QFileDialog,
-    QGroupBox,
 )
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtCore import QUrl
 from serial.tools import list_ports
 
 from qfluentwidgets import (
-    BodyLabel,
     ComboBox,
     FluentIcon,
+    HeaderCardWidget,
     LineEdit,
-    PrimaryPushButton,
     ProgressRing,
     PushButton,
     SpinBox, 
     ToolButton
 )
 
-from RecordingService import RecordingService
-from RecordingUtils import RecordingError, buildOutputPath, checkFileExists
-from SettingService import SettingService
+from gui.ParamCard import ParamCard
+from utils.RecordingService import RecordingService
+from utils.RecordingUtils import RecordingError, buildOutputPath, checkFileExists
+from utils.SettingService import SettingService
+from gui.ConnectionCard import ConnectionCard
 
 
 class FolderPathLineEdit(LineEdit):
@@ -40,6 +40,35 @@ class FolderPathLineEdit(LineEdit):
         self.pathClicked.emit()
         super().mousePressEvent(a0)
 
+class OutputCard(HeaderCardWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setTitle("录制输出")
+        self.vBoxLayout = QVBoxLayout()
+
+        outputRow = QHBoxLayout()
+        outputRow.setSpacing(10)
+
+        self.recordDirButton = ToolButton(FluentIcon.FOLDER)
+        outputRow.addWidget(self.recordDirButton)
+
+        self.outputPathEdit = FolderPathLineEdit()
+        self.outputPathEdit.setPlaceholderText("录制目录路径")
+        self.outputPathEdit.setReadOnly(True)
+        outputRow.addWidget(self.outputPathEdit, 2)
+
+        self.filenameEdit = LineEdit()
+        self.filenameEdit.setPlaceholderText("输入文件名 (不需要 .txt)")
+        outputRow.addWidget(self.filenameEdit, 1)
+
+        self.recordDataSourceCombo = ComboBox(self)
+        
+        self.recordDataSourceCombo.setFixedWidth(120)
+        outputRow.addWidget(self.recordDataSourceCombo)
+
+        outputRow.addStretch()
+        self.vBoxLayout.addLayout(outputRow)
+        self.viewLayout.addLayout(self.vBoxLayout)
 
 class RecordingWidget(QWidget):
     """Recording and serial control page."""
@@ -47,10 +76,16 @@ class RecordingWidget(QWidget):
     startSerialRequested = pyqtSignal(str)
     stopSerialRequested = pyqtSignal()
     infoRequested = pyqtSignal(str, str)
+    portsUpdated = pyqtSignal(list, str)
+    serialStateChanged = pyqtSignal(bool)
+    powerUpdated = pyqtSignal(dict)
+    configApplied = pyqtSignal(dict)
     RECORD_SOURCE_KEY = "Recording/DataSource"
     RECORD_DURATION_KEY = "Recording/DurationSeconds"
     RECORD_SOURCE_RAW = "raw"
     RECORD_SOURCE_PROCESSED = "processed"
+    RECORD_SOURCE_TEXT_RAW = "原始数据"
+    RECORD_SOURCE_TEXT_PROCESSED = "预处理数据"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -70,6 +105,8 @@ class RecordingWidget(QWidget):
         self.timedTargetFrames = 0
         self._isApplyingSettings = False
         self._pendingLastPort = ""
+        self._recordDataSourceWarningActive = False
+        self._recordDataSource = self.RECORD_SOURCE_PROCESSED
 
         self.settings = SettingService.get_settings()
 
@@ -84,108 +121,18 @@ class RecordingWidget(QWidget):
 
         rootLayout = QVBoxLayout(self)
         rootLayout.setContentsMargins(12, 12, 12, 12)
-        rootLayout.setSpacing(12)
+        rootLayout.setSpacing(6)
 
-        connectionGroup = QGroupBox("设备连接")
-        connectionLayout = QVBoxLayout(connectionGroup)
-        connectionLayout.setContentsMargins(12, 10, 12, 10)
+        self.connectionGroup = ConnectionCard()
+        rootLayout.addWidget(self.connectionGroup)
 
-        connectionRow = QHBoxLayout()
-        connectionRow.setSpacing(10)
+        self.paramCard = ParamCard()
+        rootLayout.addWidget(self.paramCard)
 
-        self.portCombo = ComboBox()
-        self.portCombo.setMinimumWidth(180)
-        connectionRow.addWidget(self.portCombo)
-
-        self.refreshButton = PushButton(FluentIcon.SYNC, "刷新串口")
-        connectionRow.addWidget(self.refreshButton)
-
-        self.startButton = PrimaryPushButton(FluentIcon.PLAY_SOLID, "开始接收")
-        connectionRow.addWidget(self.startButton)
-
-        self.stopButton = PushButton(FluentIcon.PAUSE, "停止")
-        self.stopButton.setEnabled(False)
-        connectionRow.addWidget(self.stopButton)
-
-        connectionRow.addStretch()
-        connectionLayout.addLayout(connectionRow)
-
-        powerRow = QHBoxLayout()
-        powerRow.setSpacing(10)
-
-        self.devVoltageLabel = BodyLabel("总线电压: V")
-        powerRow.addWidget(self.devVoltageLabel)
-
-        self.devCurrentLabel = BodyLabel("电流: mA")
-        powerRow.addWidget(self.devCurrentLabel)
-
-        self.devPowerLabel = BodyLabel("功率: mW")
-        powerRow.addWidget(self.devPowerLabel)
-        powerRow.addStretch()
-
-        connectionLayout.addLayout(powerRow)
-        rootLayout.addWidget(connectionGroup)
-
-        paramGroup = QGroupBox("参数设置")
-        paramLayout = QVBoxLayout(paramGroup)
-        paramLayout.setContentsMargins(12, 10, 12, 10)
-
-        paramRow = QHBoxLayout()
-        paramRow.setSpacing(10)
-
-        self.scanFreqLabel = QLabel("扫描频率 (Hz)")
-        paramRow.addWidget(self.scanFreqLabel)
-
-        self.scanFreqSpin = SpinBox(self)
-        self.scanFreqSpin.setRange(1, 60)
-        self.scanFreqSpin.setValue(20)
-        self.scanFreqSpin.setFixedWidth(120)
-        paramRow.addWidget(self.scanFreqSpin)
-
-        self.sampleDepthLabel = QLabel("采样深度")
-        paramRow.addWidget(self.sampleDepthLabel)
-
-        self.sampleDepthSpin = SpinBox(self)
-        self.sampleDepthSpin.setRange(1, 1024)
-        self.sampleDepthSpin.setValue(128)
-        self.sampleDepthSpin.setFixedWidth(120)
-        paramRow.addWidget(self.sampleDepthSpin)
-
-        self.applyParamButton = PushButton(FluentIcon.SEND, "应用")
-        paramRow.addWidget(self.applyParamButton)
-        paramRow.addStretch()
-
-        paramLayout.addLayout(paramRow)
-        rootLayout.addWidget(paramGroup)
-
-        outputGroup = QGroupBox("录制输出")
-        outputLayout = QHBoxLayout(outputGroup)
-        outputLayout.setContentsMargins(12, 10, 12, 10)
-        outputLayout.setSpacing(10)
-
-        self.recordDirButton = ToolButton(FluentIcon.FOLDER)
-        self.outputPathEdit = FolderPathLineEdit()
-        self.outputPathEdit.setPlaceholderText("录制目录路径")
-        self.outputPathEdit.setReadOnly(True)
-        self.outputPathEdit.setText("")
-        self.filenameEdit = LineEdit()
-        self.filenameEdit.setPlaceholderText("输入文件名 (不需要 .txt)")
-
-        outputLayout.addWidget(self.recordDirButton)
-        outputLayout.addWidget(self.outputPathEdit, 2)
-        outputLayout.addWidget(self.filenameEdit, 1)
-
-        self.recordDataSourceCombo = ComboBox(self)
-        self.recordDataSourceCombo.addItem("原始数据", self.RECORD_SOURCE_RAW)
-        self.recordDataSourceCombo.addItem("预处理数据", self.RECORD_SOURCE_PROCESSED)
-        self.recordDataSourceCombo.setFixedWidth(150)
-        outputLayout.addWidget(self.recordDataSourceCombo)
-        self.recordDataSourceWarningLabel = BodyLabel("当前选择“预处理数据”，但实时预处理未开启。若继续录制将导致数据源不匹配。")
-        self.recordDataSourceWarningLabel.setStyleSheet("color: #c62828; font-weight: 600;")
-        self.recordDataSourceWarningLabel.setVisible(False)
-        outputLayout.addWidget(self.recordDataSourceWarningLabel, 1)
-
-        rootLayout.addWidget(outputGroup)
+        self.outputGroup = OutputCard()
+        self.outputGroup.recordDataSourceCombo.addItem(self.RECORD_SOURCE_TEXT_RAW)
+        self.outputGroup.recordDataSourceCombo.addItem(self.RECORD_SOURCE_TEXT_PROCESSED)
+        rootLayout.addWidget(self.outputGroup)
 
         self.recordContinuousStartButton = PushButton("开始连续录制")
         self.recordContinuousStartButton.setEnabled(False)
@@ -229,21 +176,21 @@ class RecordingWidget(QWidget):
 
         rootLayout.addStretch()
 
-        self.refreshButton.clicked.connect(self.refreshPorts)
-        self.startButton.clicked.connect(self.onStartSerialClicked)
-        self.stopButton.clicked.connect(self.onStopSerialClicked)
-        self.recordDirButton.clicked.connect(self.selectOutputDirectory)
-        self.outputPathEdit.pathClicked.connect(self.onOutputPathEditClicked)
-        self.applyParamButton.clicked.connect(self.onApplyParamClicked)
+        self.connectionGroup.refreshButton.clicked.connect(self.refreshPorts)
+        self.connectionGroup.startButton.clicked.connect(self.onStartSerialClicked)
+        self.connectionGroup.stopButton.clicked.connect(self.onStopSerialClicked)
+        self.outputGroup.recordDirButton.clicked.connect(self.selectOutputDirectory)
+        self.outputGroup.outputPathEdit.pathClicked.connect(self.onOutputPathEditClicked)
+        self.paramCard.applyParamButton.clicked.connect(self.onApplyParamClicked)
         self.recordContinuousStartButton.clicked.connect(self.onRecordStartContinuous)
         self.recordTimedStartButton.clicked.connect(self.onRecordStartTimed)
         self.recordStopButton.clicked.connect(self.onRecordStop)
-        self.portCombo.currentIndexChanged.connect(self.onPortSelectionChanged)
-        self.scanFreqSpin.valueChanged.connect(self.onScanFreqChanged)
-        self.sampleDepthSpin.valueChanged.connect(self.onSampleDepthChanged)
+        self.connectionGroup.portCombo.currentIndexChanged.connect(self.onPortSelectionChanged)
+        self.paramCard.scanFreqSpin.valueChanged.connect(self.onScanFreqChanged)
+        self.paramCard.sampleDepthSpin.valueChanged.connect(self.onSampleDepthChanged)
         self.recordDurationSpin.valueChanged.connect(self.onRecordDurationChanged)
-        self.filenameEdit.editingFinished.connect(self.onFilenameEditingFinished)
-        self.recordDataSourceCombo.currentIndexChanged.connect(self.onRecordDataSourceChanged)
+        self.outputGroup.filenameEdit.editingFinished.connect(self.onFilenameEditingFinished)
+        self.outputGroup.recordDataSourceCombo.currentIndexChanged.connect(self.onRecordDataSourceChanged)
 
         self.loadSettings()
         self.refreshPorts()
@@ -261,20 +208,18 @@ class RecordingWidget(QWidget):
             recordDataSource = self.settings.value(self.RECORD_SOURCE_KEY, self.RECORD_SOURCE_PROCESSED, type=str)
             self._pendingLastPort = self.settings.value("Serial/LastPort", "", type=str)
 
-            self.scanFreqSpin.setValue(max(1, min(60, scanFreq)))
-            self.sampleDepthSpin.setValue(max(1, min(1024, sampleDepth)))
+            self.paramCard.scanFreqSpin.setValue(max(1, min(60, scanFreq)))
+            self.paramCard.sampleDepthSpin.setValue(max(1, min(1024, sampleDepth)))
             self.recordDurationSpin.setValue(max(1, min(60, recordDuration)))
-            self.filenameEdit.setText(filename)
-            sourceIndex = self.recordDataSourceCombo.findData(recordDataSource)
-            if sourceIndex >= 0:
-                self.recordDataSourceCombo.setCurrentIndex(sourceIndex)
+            self.outputGroup.filenameEdit.setText(filename)
+            self._setRecordDataSource(recordDataSource)
 
             if outputDir and Path(outputDir).exists():
                 self.recordOutputDir = outputDir
-                self.outputPathEdit.setText(outputDir)
+                self.outputGroup.outputPathEdit.setText(outputDir)
             else:
                 self.recordOutputDir = ""
-                self.outputPathEdit.setText("")
+                self.outputGroup.outputPathEdit.setText("")
                 if outputDir:
                     self.showInfo("上次录制目录不存在，已清空，请重新选择", "warning")
         finally:
@@ -285,19 +230,39 @@ class RecordingWidget(QWidget):
         self.settings.sync()
 
     def saveAllSettings(self):
-        port = self.portCombo.currentData()
+        port = self.connectionGroup.portCombo.currentData()
         self._saveSetting("Serial/LastPort", port if port else "")
-        self._saveSetting("Hardware/ScanFrequencyHz", int(self.scanFreqSpin.value()))
-        self._saveSetting("Hardware/SampleDepth", int(self.sampleDepthSpin.value()))
+        self._saveSetting("Hardware/ScanFrequencyHz", int(self.paramCard.scanFreqSpin.value()))
+        self._saveSetting("Hardware/SampleDepth", int(self.paramCard.sampleDepthSpin.value()))
         self._saveSetting("Recording/OutputDirectory", self.recordOutputDir.strip())
-        self._saveSetting("Recording/FileName", self.filenameEdit.text().strip())
+        self._saveSetting("Recording/FileName", self.outputGroup.filenameEdit.text().strip())
         self._saveSetting(self.RECORD_DURATION_KEY, int(self.recordDurationSpin.value()))
         self._saveSetting(self.RECORD_SOURCE_KEY, self.getRecordDataSource())
+
+    def _recordSourceFromText(self, text: str) -> str:
+        normalized = (text or "").strip()
+        if normalized == self.RECORD_SOURCE_TEXT_RAW:
+            return self.RECORD_SOURCE_RAW
+        return self.RECORD_SOURCE_PROCESSED
+
+    def _recordSourceText(self, source: str) -> str:
+        if source == self.RECORD_SOURCE_RAW:
+            return self.RECORD_SOURCE_TEXT_RAW
+        return self.RECORD_SOURCE_TEXT_PROCESSED
+
+    def _setRecordDataSource(self, source: str):
+        if source not in (self.RECORD_SOURCE_RAW, self.RECORD_SOURCE_PROCESSED):
+            source = self.RECORD_SOURCE_PROCESSED
+
+        self._recordDataSource = source
+        text = self._recordSourceText(source)
+        if self.outputGroup.recordDataSourceCombo.currentText() != text:
+            self.outputGroup.recordDataSourceCombo.setCurrentText(text)
 
     def onPortSelectionChanged(self, _index: int):
         if self._isApplyingSettings:
             return
-        port = self.portCombo.currentData()
+        port = self.connectionGroup.portCombo.currentData()
         if port:
             self._saveSetting("Serial/LastPort", port)
 
@@ -314,7 +279,7 @@ class RecordingWidget(QWidget):
     def onFilenameEditingFinished(self):
         if self._isApplyingSettings:
             return
-        self._saveSetting("Recording/FileName", self.filenameEdit.text().strip())
+        self._saveSetting("Recording/FileName", self.outputGroup.filenameEdit.text().strip())
 
     def onRecordDurationChanged(self, value: int):
         if self._isApplyingSettings:
@@ -322,13 +287,15 @@ class RecordingWidget(QWidget):
         self._saveSetting(self.RECORD_DURATION_KEY, int(value))
 
     def onRecordDataSourceChanged(self, _index: int):
+        self._recordDataSource = self._recordSourceFromText(self.outputGroup.recordDataSourceCombo.currentText())
+
         if self._isApplyingSettings:
             return
         self._saveSetting(self.RECORD_SOURCE_KEY, self.getRecordDataSource())
         self._updateRecordDataSourceWarning()
 
     def getRecordDataSource(self) -> str:
-        return self.recordDataSourceCombo.currentData() or self.RECORD_SOURCE_PROCESSED
+        return self._recordDataSource
 
     def _isRealtimePreprocessEnabled(self) -> bool:
         try:
@@ -342,13 +309,23 @@ class RecordingWidget(QWidget):
 
     def _shouldWarnProcessedSourceWithoutPreprocess(self) -> bool:
         return (
-            # self.getRecordDataSource() == self.RECORD_SOURCE_PROCESSED
-            self.recordDataSourceCombo.currentData() == self.RECORD_SOURCE_PROCESSED
+            self.getRecordDataSource() == self.RECORD_SOURCE_PROCESSED
             and not self._isRealtimePreprocessEnabled()
         )
 
     def _updateRecordDataSourceWarning(self):
-        self.recordDataSourceWarningLabel.setVisible(self._shouldWarnProcessedSourceWithoutPreprocess())
+        shouldWarn = self._shouldWarnProcessedSourceWithoutPreprocess()
+
+        if shouldWarn and not self._recordDataSourceWarningActive:
+            self._recordDataSourceWarningActive = True
+            self.showInfo(
+                "当前选择“预处理数据”，但实时预处理未开启。若继续录制将导致数据源不匹配。",
+                "warning",
+            )
+            return
+
+        if not shouldWarn:
+            self._recordDataSourceWarningActive = False
 
     def onRealtimePreprocessSwitchChanged(self, _enabled: bool):
         self._updateRecordDataSourceWarning()
@@ -357,42 +334,46 @@ class RecordingWidget(QWidget):
         self.infoRequested.emit(message, level)
 
     def refreshPorts(self):
-        previousDevice = self.portCombo.currentData()
-        self.portCombo.clear()
+        previousDevice = self.connectionGroup.portCombo.currentData()
+        self.connectionGroup.portCombo.clear()
 
         ports = list_ports.comports()
+        emittedOptions = []
         for portInfo in ports:
             displayText = f"{portInfo.device} - {portInfo.description}"
-            self.portCombo.addItem(displayText, portInfo.device)
+            self.connectionGroup.portCombo.addItem(displayText, portInfo.device)
+            emittedOptions.append((displayText, portInfo.device))
 
         if not ports:
             self.showInfo("未检测到串口设备", "warning")
+            self.portsUpdated.emit([], "")
             return
 
         preferredDevice = previousDevice or self._pendingLastPort
         if preferredDevice:
-            index = self.portCombo.findData(preferredDevice)
+            index = self.connectionGroup.portCombo.findData(preferredDevice)
             if index >= 0:
                 self._isApplyingSettings = True
-                self.portCombo.setCurrentIndex(index)
+                self.connectionGroup.portCombo.setCurrentIndex(index)
                 self._isApplyingSettings = False
 
-        currentPort = self.portCombo.currentData()
+        currentPort = self.connectionGroup.portCombo.currentData()
         if currentPort:
             self._saveSetting("Serial/LastPort", currentPort)
+        self.portsUpdated.emit(emittedOptions, str(currentPort or ""))
 
     def onStartSerialClicked(self):
         if self.serialRunning:
             self.showInfo("串口已在运行", "warning")
             return
 
-        if self.portCombo.count() == 0:
+        if self.connectionGroup.portCombo.count() == 0:
             self.showInfo("没有可用串口", "warning")
             return
 
-        port = self.portCombo.currentData()
+        port = self.connectionGroup.portCombo.currentData()
         if not port:
-            display = self.portCombo.currentText().strip()
+            display = self.connectionGroup.portCombo.currentText().strip()
             if display:
                 portCandidate = display.split()[0]
                 if portCandidate:
@@ -410,23 +391,25 @@ class RecordingWidget(QWidget):
 
     def onSerialStarted(self):
         self.serialRunning = True
-        self.startButton.setEnabled(False)
-        self.stopButton.setEnabled(True)
-        self.currentScanFreq = self.scanFreqSpin.value()
+        self.connectionGroup.startButton.setEnabled(False)
+        self.connectionGroup.stopButton.setEnabled(True)
+        self.currentScanFreq = self.paramCard.scanFreqSpin.value()
         self.clearPowerLabels()
         self.updateRecordingUiState()
+        self.serialStateChanged.emit(True)
 
     def onSerialStopped(self):
         self.serialRunning = False
-        self.startButton.setEnabled(True)
-        self.stopButton.setEnabled(False)
+        self.connectionGroup.startButton.setEnabled(True)
+        self.connectionGroup.stopButton.setEnabled(False)
         self.clearPowerLabels()
         self.updateRecordingUiState()
+        self.serialStateChanged.emit(False)
 
     def clearPowerLabels(self):
-        self.devVoltageLabel.setText("总线电压: V")
-        self.devCurrentLabel.setText("电流: mA")
-        self.devPowerLabel.setText("功率: mW")
+        self.connectionGroup.devVoltageLabel.setText("总线电压: V")
+        self.connectionGroup.devCurrentLabel.setText("电流: mA")
+        self.connectionGroup.devPowerLabel.setText("功率: mW")
 
     def onPowerReady(self, powerData: dict):
         busMilliVolt = int(powerData.get("bus_mv", 0))
@@ -434,9 +417,10 @@ class RecordingWidget(QWidget):
         powerMilliWatt = int(powerData.get("power_mw", 0))
 
         busVolt = busMilliVolt / 1000.0
-        self.devVoltageLabel.setText(f"总线电压: {busVolt:.2f}V")
-        self.devCurrentLabel.setText(f"电流: {currentMilliAmp}mA")
-        self.devPowerLabel.setText(f"功率: {powerMilliWatt}mW")
+        self.connectionGroup.devVoltageLabel.setText(f"总线电压: {busVolt:.2f}V")
+        self.connectionGroup.devCurrentLabel.setText(f"电流: {currentMilliAmp}mA")
+        self.connectionGroup.devPowerLabel.setText(f"功率: {powerMilliWatt}mW")
+        self.powerUpdated.emit(dict(powerData))
 
     def selectOutputDirectory(self):
         directory = QFileDialog.getExistingDirectory(
@@ -446,16 +430,16 @@ class RecordingWidget(QWidget):
         )
         if directory:
             self.recordOutputDir = directory
-            self.outputPathEdit.setText(directory)
+            self.outputGroup.outputPathEdit.setText(directory)
             self._saveSetting("Recording/OutputDirectory", directory)
             # self.showInfo(f"录制目录: {directory}", "info")
         else:
             self.recordOutputDir = ""
-            self.outputPathEdit.setText("")
+            self.outputGroup.outputPathEdit.setText("")
             self._saveSetting("Recording/OutputDirectory", "")
 
     def onOutputPathEditClicked(self):
-        path = self.outputPathEdit.text().strip()
+        path = self.outputGroup.outputPathEdit.text().strip()
         if path:
             QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
@@ -469,7 +453,7 @@ class RecordingWidget(QWidget):
             self.showInfo("请先选择录制目录", "warning")
             return False
 
-        filename = self.filenameEdit.text().strip()
+        filename = self.outputGroup.filenameEdit.text().strip()
         if not filename:
             self.showInfo("请输入文件名", "warning")
             return False
@@ -687,16 +671,16 @@ class RecordingWidget(QWidget):
         self.recordTimedStartButton.setEnabled(canStart)
         self.recordDurationSpin.setEnabled(state != RecordingService.STATE_ACTIVE_TIMED)
         self.recordStopButton.setEnabled(state != RecordingService.STATE_IDLE)
-        self.applyParamButton.setEnabled(self.serialRunning)
-        self.scanFreqSpin.setEnabled(self.serialRunning)
-        self.sampleDepthSpin.setEnabled(self.serialRunning)
-        self.recordDataSourceCombo.setEnabled(state == RecordingService.STATE_IDLE)
+        self.paramCard.applyParamButton.setEnabled(self.serialRunning)
+        self.paramCard.scanFreqSpin.setEnabled(self.serialRunning)
+        self.paramCard.sampleDepthSpin.setEnabled(self.serialRunning)
+        self.outputGroup.recordDataSourceCombo.setEnabled(state == RecordingService.STATE_IDLE)
         self._updateRecordDataSourceWarning()
 
     def onApplyParamClicked(self):
         """Handle apply parameter button click: send config to device and wait for confirmation."""
-        scanFreq = self.scanFreqSpin.value()
-        sampleDepth = self.sampleDepthSpin.value()
+        scanFreq = self.paramCard.scanFreqSpin.value()
+        sampleDepth = self.paramCard.sampleDepthSpin.value()
 
         # Validate ranges (should be guaranteed by spinbox settings, but be defensive)
         if not (1 <= scanFreq <= 60):
@@ -716,9 +700,9 @@ class RecordingWidget(QWidget):
                 mainWindow.serialThread.sendSetConfig(scanFreq, sampleDepth)
                 # self.showInfo("已发送参数设置，等待确认...", "info")
                 # Disable button and spinboxes during wait
-                self.applyParamButton.setEnabled(False)
-                self.scanFreqSpin.setEnabled(False)
-                self.sampleDepthSpin.setEnabled(False)
+                self.paramCard.applyParamButton.setEnabled(False)
+                self.paramCard.scanFreqSpin.setEnabled(False)
+                self.paramCard.sampleDepthSpin.setEnabled(False)
                 # Start timeout timer
                 self.configWaitTimer.start()
             else:
@@ -737,35 +721,36 @@ class RecordingWidget(QWidget):
             # Update current scan frequency
             self.currentScanFreq = scanFreqHz
             self._isApplyingSettings = True
-            self.scanFreqSpin.setValue(max(1, min(60, int(scanFreqHz))))
-            self.sampleDepthSpin.setValue(max(1, min(1024, int(sampleDepth))))
+            self.paramCard.scanFreqSpin.setValue(max(1, min(60, int(scanFreqHz))))
+            self.paramCard.sampleDepthSpin.setValue(max(1, min(1024, int(sampleDepth))))
             self._isApplyingSettings = False
-            self._saveSetting("Hardware/ScanFrequencyHz", int(self.scanFreqSpin.value()))
-            self._saveSetting("Hardware/SampleDepth", int(self.sampleDepthSpin.value()))
+            self._saveSetting("Hardware/ScanFrequencyHz", int(self.paramCard.scanFreqSpin.value()))
+            self._saveSetting("Hardware/SampleDepth", int(self.paramCard.sampleDepthSpin.value()))
             
             # Re-enable controls
-            self.applyParamButton.setEnabled(True)
-            self.scanFreqSpin.setEnabled(True)
-            self.sampleDepthSpin.setEnabled(True)
+            self.paramCard.applyParamButton.setEnabled(True)
+            self.paramCard.scanFreqSpin.setEnabled(True)
+            self.paramCard.sampleDepthSpin.setEnabled(True)
             
             # Show success message
             self.showInfo(
                 f"设置成功：扫描频率 = {scanFreqHz}Hz，采样深度 = {sampleDepth}",
                 "success"
             )
+            self.configApplied.emit(dict(config_dict))
         except Exception as e:
             self.showInfo(f"处理配置响应失败: {e}", "error")
             # Re-enable controls anyway
-            self.applyParamButton.setEnabled(True)
-            self.scanFreqSpin.setEnabled(True)
-            self.sampleDepthSpin.setEnabled(True)
+            self.paramCard.applyParamButton.setEnabled(True)
+            self.paramCard.scanFreqSpin.setEnabled(True)
+            self.paramCard.sampleDepthSpin.setEnabled(True)
 
     def onConfigWaitTimeout(self):
         """Handle configuration wait timeout (1 second)."""
         # Re-enable controls
-        self.applyParamButton.setEnabled(True)
-        self.scanFreqSpin.setEnabled(True)
-        self.sampleDepthSpin.setEnabled(True)
+        self.paramCard.applyParamButton.setEnabled(True)
+        self.paramCard.scanFreqSpin.setEnabled(True)
+        self.paramCard.sampleDepthSpin.setEnabled(True)
         
         # Show timeout error
         self.showInfo("参数设置超时，请检查硬件连接", "error")

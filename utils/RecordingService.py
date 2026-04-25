@@ -6,7 +6,7 @@ Handles file I/O, frame formatting, and frame counting.
 from typing import List, Optional, TextIO
 import math
 
-from RecordingUtils import RecordingError
+from utils.RecordingUtils import RecordingError
 
 
 class RecordingService:

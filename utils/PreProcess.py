@@ -1,7 +1,7 @@
 """实时超声预处理工具。"""
 
 from dataclasses import dataclass, field
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
 from scipy import signal
@@ -25,14 +25,14 @@ class PreprocessParams:
 		standardize_per_frame: 是否对每一帧（4通道整体）做标准化
 	"""
 
-	samplingFreqHz: float = 5.5e6
+	samplingFreqHz: float = 5.5e6  # ADC 采样频率，Hz
 	tgcAlpha: float = 0.05  # 时间增益补偿（TGC）强度系数，越大表示增益随深度增加得越快
 	samplingBalance: float = 0  # TGC 前用于去直流的 ADC 基线值
 	burstToneFreqHz: float = 4e6  # 用于 TGC 缩放的发射中心频率，Hz
-	inspectDepth_m: float = 38.5e-3  # 构造深度增益曲线时使用的等效探测深度，单位米
-	butterLowHzList: List[float] = field(default_factory=lambda: [1.3e6, 3e6, 3e6, 3e6])  # 巴特沃斯带通低截止频率，Hz
-	butterHighHzList: List[float] = field(default_factory=lambda: [2.45e6, 7e6, 7e6, 7e6])  # 巴特沃斯带通高截止频率，Hz
-	butterOrderList: List[int] = field(default_factory=lambda: [6, 4, 4, 4])  # 巴特沃斯滤波器阶数
+	inspectDepth_m: float = 70.0e-3  # 构造深度增益曲线时使用的等效探测深度，单位米
+	butterLowHzList: List[float] = field(default_factory=lambda: [4e6, 3e6, 3e6, 3e6])  # 巴特沃斯带通低截止频率，Hz
+	butterHighHzList: List[float] = field(default_factory=lambda: [6e6, 7e6, 7e6, 7e6])  # 巴特沃斯带通高截止频率，Hz
+	butterOrderList: List[int] = field(default_factory=lambda: [5, 4, 4, 4])  # 巴特沃斯滤波器阶数
 	enableLogCompression: bool = False  # 是否启用对数压缩
 	logCompRatio: float = 0.1  # 对数压缩系数，越大表示压缩越激烈
 	standardizePerFrame: bool = False  # 是否启用逐帧标准化
@@ -111,14 +111,22 @@ class RealtimePreprocessor:
 		filtered = signal.filtfilt(b, a, values)
 		return np.asarray(filtered, dtype=np.float32)
 
-	def process(self, channels: Iterable[Iterable[float]]) -> List[List[int]]:
-		"""处理一帧数据，输入输出形状均为 (通道, 深度)。"""
+	def _toIntFrame(self, processed: np.ndarray) -> List[List[int]]:
+		processed_int = np.rint(np.abs(processed)).astype(np.int32, copy=False)
+		return [processed_int[idx, :].tolist() for idx in range(4)]
+
+	def _toFloatFrame(self, processed: np.ndarray) -> List[List[float]]:
+		processed_float = np.asarray(processed, dtype=np.float32)
+		return [processed_float[idx, :].tolist() for idx in range(4)]
+
+	def _buildEnvelopeFrame(self, channels: Iterable[Iterable[float]]) -> np.ndarray:
+		"""执行到包络/可选对数压缩步骤，返回 float32 帧。"""
 		channel_arrays = [np.asarray(channel, dtype=np.float32).reshape(-1) for channel in channels]
 		if len(channel_arrays) != 4:
 			raise ValueError(f"Expected 4 channels, got {len(channel_arrays)}")
 
 		if not channel_arrays or channel_arrays[0].size == 0:
-			return [arr.astype(np.int32).tolist() for arr in channel_arrays]
+			return np.zeros((4, 0), dtype=np.float32)
 
 		depths = [arr.size for arr in channel_arrays]
 		if len(set(depths)) != 1:
@@ -126,7 +134,6 @@ class RealtimePreprocessor:
 
 		depth = depths[0]
 
-		# 构造 TGC 增益曲线
 		tgc = self._buildTGC(depth)
 
 		processed = np.zeros((4, depth), dtype=np.float32)
@@ -147,13 +154,15 @@ class RealtimePreprocessor:
 
 			processed[ch_no, :] = envelope
 
-		# 5. 逐帧标准化（把整帧数据变成均值为 0，标准差为 1 的分布）
+		return processed
+
+	def _applyPostProcess(self, processed: np.ndarray) -> np.ndarray:
+		"""应用标准化与归一化等后处理步骤。"""
 		if self.params.standardizePerFrame:
 			mean = float(np.mean(processed))
 			std = float(np.std(processed)) + 1e-6
 			processed = (processed - mean) / std
 
-		# 6. 逐帧归一化（把整帧数据缩放到 [0, 1024] 范围）
 		if self.params.normalizePerFrame:
 			min_val = float(np.min(processed))
 			max_val = float(np.max(processed))
@@ -161,7 +170,38 @@ class RealtimePreprocessor:
 				processed = (processed - min_val) / (max_val - min_val) * 512.0
 			else:
 				processed = np.zeros_like(processed)
-				
-		processed_int = np.rint(np.abs(processed)).astype(np.int32, copy=False)
-		return [processed_int[idx, :].tolist() for idx in range(4)]
+		return processed
+
+	def processForOutputAndDisplay(self, channels: Iterable[Iterable[float]]) -> Tuple[List[List[int]], List[List[int]]]:
+		"""返回 (输出分支, 显示分支) 两路数据。"""
+		envelope = self._buildEnvelopeFrame(channels)
+		output_processed = self._applyPostProcess(envelope.copy())
+
+		output_frame = self._toIntFrame(output_processed)
+		if self.params.standardizePerFrame:
+			display_frame = self._toIntFrame(envelope)
+		else:
+			display_frame = output_frame
+		return output_frame, display_frame
+
+	def processForModelOutputAndDisplay(
+		self,
+		channels: Iterable[Iterable[float]],
+	) -> Tuple[List[List[float]], List[List[int]], List[List[int]]]:
+		"""返回 (模型分支, 输出分支, 显示分支) 三路数据。"""
+		envelope = self._buildEnvelopeFrame(channels)
+		model_processed = self._applyPostProcess(envelope.copy())
+
+		model_frame = self._toFloatFrame(model_processed)
+		output_frame = self._toIntFrame(model_processed)
+		if self.params.standardizePerFrame:
+			display_frame = self._toIntFrame(envelope)
+		else:
+			display_frame = output_frame
+		return model_frame, output_frame, display_frame
+
+	def process(self, channels: Iterable[Iterable[float]]) -> List[List[int]]:
+		"""处理一帧数据，输入输出形状均为 (通道, 深度)。"""
+		output_frame, _ = self.processForOutputAndDisplay(channels)
+		return output_frame
 

@@ -9,7 +9,7 @@ from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QSizePolicy, QGridLayout
 from qfluentwidgets import BodyLabel, SwitchButton
 
-from SettingService import SettingService
+from utils.SettingService import SettingService
 
 
 class PlotPanel(QWidget):
@@ -337,6 +337,12 @@ class PlotPanel(QWidget):
         self._m_mode_levels[channel_idx] = (new_low, new_high)
 
     def updatePlots(self, frames: List[List[float]]):
+        self._updatePlots(frames, direction=1)
+
+    def updatePlaybackFrames(self, frames: List[List[float]], direction: int = 1):
+        self._updatePlots(frames, direction=direction)
+
+    def _updatePlots(self, frames: List[List[float]], direction: int = 1):
         if len(frames) != 4:
             return
 
@@ -398,8 +404,12 @@ class PlotPanel(QWidget):
                 if data_len != mModeBuffer.shape[0]:
                     continue
 
-                mModeBuffer = np.roll(mModeBuffer, -1, axis=1)
-                mModeBuffer[:, -1] = abs_data
+                if direction >= 0:
+                    mModeBuffer = np.roll(mModeBuffer, -1, axis=1)
+                    mModeBuffer[:, -1] = abs_data
+                else:
+                    mModeBuffer = np.roll(mModeBuffer, 1, axis=1)
+                    mModeBuffer[:, 0] = abs_data
                 self._m_mode_buffers[idx] = mModeBuffer
                 self._m_mode_images[idx].setImage(mModeBuffer.T, autoLevels=False, levels=self._m_mode_levels[idx])
                 self._m_mode_images[idx].setRect(0.0, 0.0, self._mModeSeconds, data_len)

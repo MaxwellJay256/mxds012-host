@@ -208,3 +208,5 @@ __marimo__/
 
 build*/
 dist*/
+utils/config/
+ml/models/
