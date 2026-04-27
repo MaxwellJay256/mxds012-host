@@ -3,6 +3,7 @@ from PyQt5.QtWidgets import QHBoxLayout, QStackedWidget, QVBoxLayout, QWidget
 from qfluentwidgets import Pivot
 
 from .RecordingWidget import RecordingWidget
+from .TrainingWidget import TrainingWidget
 from .PlaybackWidget import PlaybackWidget
 from .RealtimeAnalyzeWidget import RealtimeAnalyzeWidget
 from utils.PreprocessParamService import PreprocessParamService
@@ -12,6 +13,7 @@ class FunctionArea(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.recordingWidget = RecordingWidget(self)
+        self.trainingWidget = TrainingWidget(self)
         self.playbackWidget = PlaybackWidget(self)
         self.realtimeAnalyzeWidget = RealtimeAnalyzeWidget(self)
 
@@ -31,6 +33,7 @@ class FunctionArea(QWidget):
 
         self.addPage(self.recordingWidget, "recording", "录制")
         self.addPage(self.playbackWidget, "playback", "回放")
+        self.addPage(self.trainingWidget, "training", "训练")
         self.addPage(self.realtimeAnalyzeWidget, "realtimeAnalyze", "在线识别")
 
         self.stackedWidget.currentChanged.connect(self.onCurrentIndexChanged)

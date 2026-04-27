@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PyQt5.QtCore import Qt
+from PyQt5.QtGui import QPixmap
 from PyQt5.QtWidgets import QLabel, QVBoxLayout
 from qfluentwidgets import BodyLabel, ElevatedCardWidget
 
@@ -19,8 +22,29 @@ class GestureCard(ElevatedCardWidget):
         root_layout.setSpacing(6)
 
         self.imagePlaceholder = QLabel("图片待添加")
-        self.imagePlaceholder.setAlignment(Qt.AlignCenter)
+        self.imagePlaceholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.imagePlaceholder.setFixedSize(80, 80)
+        self._applyPlaceholderStyle()
+
+        self.nameLabel = BodyLabel(gesture_name)
+        self.nameLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.probabilityLabel = BodyLabel("0.0%")
+        self.probabilityLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        root_layout.addWidget(self.imagePlaceholder, 0, Qt.AlignmentFlag.AlignCenter)
+        root_layout.addWidget(self.nameLabel, 0, Qt.AlignmentFlag.AlignCenter)
+        root_layout.addWidget(self.probabilityLabel, 0, Qt.AlignmentFlag.AlignCenter)
+
+        self.setMinimumWidth(120)
+        self.setMaximumWidth(140)
+        self._loadGestureImage()
+        self.setSelected(False)
+
+    def _gestureImagePath(self) -> Path:
+        return Path(__file__).resolve().parents[1] / "assets" / "gesture_figures" / f"{self._gesture_name}.png"
+
+    def _applyPlaceholderStyle(self):
         self.imagePlaceholder.setStyleSheet(
             "QLabel {"
             " border: 1px dashed #999999;"
@@ -30,19 +54,24 @@ class GestureCard(ElevatedCardWidget):
             "}"
         )
 
-        self.nameLabel = BodyLabel(gesture_name)
-        self.nameLabel.setAlignment(Qt.AlignCenter)
+    def _loadGestureImage(self):
+        image_path = self._gestureImagePath()
+        if not image_path.exists():
+            return
 
-        self.probabilityLabel = BodyLabel("0.0%")
-        self.probabilityLabel.setAlignment(Qt.AlignCenter)
+        pixmap = QPixmap(str(image_path))
+        if pixmap.isNull():
+            return
 
-        root_layout.addWidget(self.imagePlaceholder, 0, Qt.AlignCenter)
-        root_layout.addWidget(self.nameLabel, 0, Qt.AlignCenter)
-        root_layout.addWidget(self.probabilityLabel, 0, Qt.AlignCenter)
-
-        self.setMinimumWidth(120)
-        self.setMaximumWidth(140)
-        self.setSelected(False)
+        scaled = pixmap.scaled(
+            self.imagePlaceholder.width(),
+            self.imagePlaceholder.height(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.imagePlaceholder.setPixmap(scaled)
+        self.imagePlaceholder.setText("")
+        self.imagePlaceholder.setStyleSheet("QLabel { border: none; background: transparent; }")
 
     def gestureName(self) -> str:
         return self._gesture_name

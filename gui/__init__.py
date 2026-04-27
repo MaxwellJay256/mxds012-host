@@ -2,3 +2,4 @@
 
 from .PlotPanel import PlotPanel
 from .FunctionArea import FunctionArea
+from .TrainingWidget import TrainingWidget

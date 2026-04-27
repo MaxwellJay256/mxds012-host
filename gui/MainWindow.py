@@ -43,8 +43,10 @@ class MainWindow(QWidget):
         pg.setConfigOptions(antialias=True, background=None, foreground='#f0f0f0')
 
         self.serialThread: Optional[SerialReader] = None
+        self.trainingWorker = None
         self.rtAnalyzer = RTAnalyzer.getInstance()
         self.rtAnalyzer.setEnabled(False)
+        self._activeFunctionPage = ""
 
         self._centralLayout = QHBoxLayout()
         self._centralLayout.setContentsMargins(24, 24, 24, 24)
@@ -56,8 +58,8 @@ class MainWindow(QWidget):
         self.recordingWidget = self.functionArea.recordingWidget
         self.realtimeAnalyzeWidget = self.functionArea.realtimeAnalyzeWidget
 
-        self._centralLayout.addWidget(self.plotPanel, 1)
-        self._centralLayout.addWidget(self.functionArea, 0)
+        self._centralLayout.addWidget(self.plotPanel, 3)
+        self._centralLayout.addWidget(self.functionArea, 2)
 
         self.recordingWidget.startSerialRequested.connect(self.startSerial)
         self.recordingWidget.stopSerialRequested.connect(self.stopSerial)
@@ -76,11 +78,16 @@ class MainWindow(QWidget):
         self.plotPanel.preprocessToggled.connect(self.recordingWidget.onRealtimePreprocessSwitchChanged)
         self.plotPanel.preprocessToggled.connect(self.playbackWidget.onRealtimePreprocessSwitchChanged)
         self.playbackWidget.onRealtimePreprocessSwitchChanged(self.plotPanel.isRealtimePreprocessEnabled())
+        self.functionArea.stackedWidget.currentChanged.connect(self.onFunctionPageChanged)
 
         self.recordingWidget.portsUpdated.connect(self.realtimeAnalyzeWidget.updatePortOptions)
         self.recordingWidget.serialStateChanged.connect(self.realtimeAnalyzeWidget.setSerialRunning)
         self.recordingWidget.powerUpdated.connect(self.realtimeAnalyzeWidget.updatePowerData)
         self.recordingWidget.configApplied.connect(self.realtimeAnalyzeWidget.onConfigReady)
+        self.trainingWidget = self.functionArea.trainingWidget
+        self.trainingWidget.refreshRequested.connect(self.onTrainingDatasetRefreshRequested)
+        self.trainingWidget.startTrainingRequested.connect(self.onTrainingStartRequested)
+        self.trainingWidget.infoRequested.connect(self.onRecordingInfoRequested)
 
         self.realtimeAnalyzeWidget.setSerialRunning(self.recordingWidget.serialRunning)
         self.realtimeAnalyzeWidget.onConfigReady(
@@ -90,6 +97,7 @@ class MainWindow(QWidget):
             }
         )
         self.recordingWidget.refreshPorts()
+        self.onFunctionPageChanged(self.functionArea.stackedWidget.currentIndex())
 
         self._loadWindowSettings()
         self.themeListener.start()
@@ -134,15 +142,94 @@ class MainWindow(QWidget):
 
         self.serialThread.start()
         self.recordingWidget.onSerialStarted()
-        self.rtAnalyzer.setEnabled(self.plotPanel.isRealtimePreprocessEnabled())
+        self._syncRealtimeAnalyzerState()
 
     def onPlotPanelPreprocessToggled(self, enabled: bool):
         if self.serialThread and self.serialThread.isRunning():
             self.serialThread.setRealtimePreprocessEnabled(enabled)
-        self.rtAnalyzer.setEnabled(bool(enabled) and self.serialThread is not None and self.serialThread.isRunning())
+        self._syncRealtimeAnalyzerState()
+
+    def _syncRealtimeAnalyzerState(self):
+        enabled = (
+            self._activeFunctionPage == "realtimeAnalyze"
+            and self.serialThread is not None
+            and self.serialThread.isRunning()
+            and self.plotPanel.isRealtimePreprocessEnabled()
+        )
+        self.rtAnalyzer.setEnabled(bool(enabled))
+
+    def onFunctionPageChanged(self, index: int):
+        widget = self.functionArea.stackedWidget.widget(index)
+        page_name = widget.objectName() if widget is not None else ""
+        previous_page_name = self._activeFunctionPage
+        self._activeFunctionPage = page_name
+
+        if previous_page_name == "realtimeAnalyze" and page_name != "realtimeAnalyze":
+            self.realtimeAnalyzeWidget.stopOnlineTest("已离开在线识别页面，在线测试已停止", level="warning")
+
+        if page_name in {"recording", "playback", "realtimeAnalyze"}:
+            if not self.plotPanel.isRealtimePreprocessEnabled():
+                self.plotPanel.setRealtimePreprocessEnabled(True, emit_signal=True)
+        else:
+            if self.plotPanel.isRealtimePreprocessEnabled():
+                self.plotPanel.setRealtimePreprocessEnabled(False, emit_signal=True)
+
+        if page_name in {"recording", "training"}:
+            self.rtAnalyzer.setEnabled(False)
+
+        self._syncRealtimeAnalyzerState()
+
+    def onTrainingDatasetRefreshRequested(self, dataset_dir: str):
+        try:
+            from ml.training_pipeline import analyze_dataset
+            analysis = analyze_dataset(dataset_dir, strict=False)
+        except Exception as error:
+            self.trainingWidget.setDatasetSummary("数据集分析失败")
+            self.trainingWidget.setDatasetIssues([str(error)])
+            self.showInfo(f"数据集分析失败: {error}", InfoBarPosition.BOTTOM, "error")
+            return
+
+        summary = (
+            f"有效文件: {analysis.valid_files} | 识别类别: {analysis.num_classes} | "
+            f"采样深度: {analysis.sampling_depth} | 忽略文件: {analysis.ignored_files}"
+        )
+        self.trainingWidget.setDatasetSummary(summary)
+        self.trainingWidget.setDatasetIssues(analysis.issues)
+        self.showInfo("数据集分析完成", InfoBarPosition.BOTTOM, "success")
+
+    def onTrainingStartRequested(self, payload: dict):
+        try:
+            from gui.TrainingWorker import TrainingWorker
+        except Exception as error:
+            self.showInfo(f"训练模块不可用: {error}", InfoBarPosition.BOTTOM, "error")
+            return
+
+        if self.trainingWorker is not None and self.trainingWorker.isRunning():
+            self.showInfo("训练任务正在运行", InfoBarPosition.BOTTOM, "warning")
+            return
+
+        self.trainingWorker = TrainingWorker(payload, self)
+        self.trainingWorker.logMessage.connect(self.trainingWidget.appendLog)
+        self.trainingWorker.progressChanged.connect(lambda value: self.trainingWidget.appendLog(f"训练进度: {value}%"))
+        self.trainingWorker.failed.connect(self.onTrainingWorkerFailed)
+        self.trainingWorker.finishedSuccessfully.connect(self.onTrainingWorkerFinished)
+        self.trainingWorker.finished.connect(lambda: self.trainingWidget.setTrainingRunning(False))
+
+        self.trainingWidget.setTrainingRunning(True)
+        self.trainingWidget.appendLog("开始训练任务...")
+        self.trainingWorker.start()
+
+    def onTrainingWorkerFinished(self, result: dict):
+        self.trainingWidget.appendLog(f"训练完成: {result.get('onnx_path', '')}")
+        self.showInfo("训练完成，模型已导出", InfoBarPosition.BOTTOM, "success")
+
+    def onTrainingWorkerFailed(self, message: str):
+        self.trainingWidget.appendLog(f"训练失败: {message}")
+        self.showInfo(f"训练失败: {message}", InfoBarPosition.BOTTOM, "error")
 
     def stopSerial(self):
         self.recordingWidget.stopRecording()
+        self.realtimeAnalyzeWidget.stopOnlineTest("串口停止，在线测试已停止", level="warning")
 
         if self.serialThread and self.serialThread.isRunning():
             self.serialThread.stop()
@@ -159,6 +246,7 @@ class MainWindow(QWidget):
         self.rtAnalyzer.setEnabled(False)
         self.serialThread = None
         self.recordingWidget.onSerialStopped()
+        self._syncRealtimeAnalyzerState()
 
     def onRecordingInfoRequested(self, message: str, level: str):
         self.showInfo(message, InfoBarPosition.BOTTOM, level)
@@ -190,6 +278,7 @@ class MainWindow(QWidget):
         """Handle window close event."""
         self._saveWindowSettings()
         self.recordingWidget.stopRecording()
+        self.realtimeAnalyzeWidget.stopOnlineTest("窗口关闭，在线测试已停止", level="warning")
 
         if self.serialThread and self.serialThread.isRunning():
             self.serialThread.stop()

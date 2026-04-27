@@ -205,3 +205,33 @@ class RealtimePreprocessor:
 		output_frame, _ = self.processForOutputAndDisplay(channels)
 		return output_frame
 
+
+def Preprocessing(data, mode: str = "standardize_only"):
+	"""Compatibility helper used by the flat dataset loader.
+
+	The input is expected to have shape (4, depth, frames) and the return value
+	keeps the same shape, but uses float32 values.
+	"""
+	array = np.asarray(data, dtype=np.float32)
+	if array.ndim != 3:
+		raise ValueError(f"Expected 3D data array, got shape={array.shape}")
+
+	if mode == "raw":
+		return array.astype(np.float32, copy=False)
+
+	params = PreprocessParams()
+	params.standardizePerFrame = True
+	params.normalizePerFrame = mode in {"standardize_and_normalize", "normalize", "full"}
+	preprocessor = RealtimePreprocessor(params)
+
+	frames = []
+	for frame_idx in range(array.shape[2]):
+		frame = array[:, :, frame_idx]
+		model_frame, _, _ = preprocessor.processForModelOutputAndDisplay(frame)
+		frames.append(np.asarray(model_frame, dtype=np.float32))
+
+	if not frames:
+		return np.zeros_like(array, dtype=np.float32)
+
+	return np.stack(frames, axis=2).astype(np.float32, copy=False)
+

@@ -5,7 +5,7 @@ from qfluentwidgets import FluentIcon, HeaderCardWidget, PushButton, SpinBox
 class ParamCard(HeaderCardWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setTitle("参数设置")
+        self.setTitle("设备参数设置")
         self.vBoxLayout = QVBoxLayout()
 
         paramRow = QHBoxLayout()

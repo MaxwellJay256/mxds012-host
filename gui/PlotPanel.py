@@ -1,15 +1,19 @@
 """
 Plotting and visualization: A-Mode (waveforms) and M-Mode (waterfall images).
 """
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import numpy as np
-import pyqtgraph as pg
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QVBoxLayout, QLabel, QSizePolicy, QGridLayout
 from qfluentwidgets import BodyLabel, SwitchButton
 
 from utils.SettingService import SettingService
+
+try:
+    import pyqtgraph as pg
+except ImportError:  # pragma: no cover - optional dependency in this environment
+    pg = None
 
 
 class PlotPanel(QWidget):
@@ -24,17 +28,17 @@ class PlotPanel(QWidget):
         self._mModeSeconds = 3.0  # M 模式显示最近 3 秒的数据
         self._scanFreqHz = 20
         self._mModeDefaultDepth = 128
-        self._plots: List[pg.PlotWidget] = []
+        self._plots: List[Any] = []
         self._curves = []
         self._raw_curves = []
         self._m_mode_images = []
         self._m_mode_buffers: List[np.ndarray] = []
         self._m_mode_indices = [0] * 4  # 环形缓冲区写入位置
         self._m_mode_width = max(3, int(self._scanFreqHz * self._mModeSeconds))  # 根据扫描频率和显示时间计算宽度
-        self._m_mode_plots = []
+        self._m_mode_plots: List[Any] = []
         self._current_sample_depths = [0] * 4
         self._m_mode_levels = [(0.0, 1024.0) for _ in range(4)] # M 超声的初始范围设置为 0-1024，后续根据数据动态调整
-        self._mModeColorMaps = [
+        self._mModeColorMaps: List[Any] = [
             self._buildColorMap(
                 [0.0, 0.35, 0.7, 1.0],
                 [[0, 0, 0, 255], [0, 70, 0, 255], [40, 170, 40, 255], [180, 255, 180, 255]],
@@ -69,11 +73,33 @@ class PlotPanel(QWidget):
         self._preprocessSwitch = SwitchButton(self)
         self._loadRealtimePreprocessState()
 
+        self._preprocessLabel.setVisible(False)
+        self._preprocessSwitch.setVisible(False)
+
         self._preprocessSwitch.checkedChanged.connect(self._onPreprocessSwitchChanged)
         preprocess_row.addWidget(self._preprocessLabel)
         preprocess_row.addWidget(self._preprocessSwitch)
         preprocess_row.addStretch()
         root_layout.addLayout(preprocess_row)
+
+        if pg is None:
+            self._fallback_mode = True
+            self._plots = []
+            self._curves = []
+            self._raw_curves = []
+            self._m_mode_images = []
+            self._m_mode_buffers = []
+            self._m_mode_indices = [0] * 4
+            self._m_mode_plots = []
+            self._current_sample_depths = [0] * 4
+            self._a_mode_zero_lines = []
+            self._a_mode_y0_lines = []
+            self._a_mode_y_end_lines = []
+            self._fallbackLabel = BodyLabel("图形依赖未安装，当前仅保留数据流和训练功能。")
+            self._fallbackLabel.setWordWrap(True)
+            root_layout.addWidget(self._fallbackLabel)
+            self._current_sample_depths = [self._mModeDefaultDepth] * 4
+            return
 
         grid_layout = QGridLayout()
         grid_layout.setContentsMargins(4, 4, 4, 4)
@@ -89,7 +115,7 @@ class PlotPanel(QWidget):
             channelContainerLayout.setContentsMargins(0, 0, 0, 0)
             channelContainerLayout.setSpacing(2)
 
-            channelTitleLabel = QLabel(f"Channel {idx + 1}")
+            channelTitleLabel = BodyLabel(f"Channel {idx + 1}")
             channelTitleLabel.setAlignment(Qt.AlignmentFlag.AlignCenter)
             channelTitleLabel.setStyleSheet("color: #000000; font-size: 11pt;")
             channelContainerLayout.addWidget(
@@ -228,6 +254,11 @@ class PlotPanel(QWidget):
         self._preprocessSwitch.setChecked(enabled)
         self._preprocessSwitch.blockSignals(False)
 
+        if getattr(self, "_fallback_mode", False):
+            if emit_signal:
+                self.preprocessToggled.emit(enabled)
+            return
+
         for raw_curve in self._raw_curves:
             raw_curve.setVisible(enabled)
             if not enabled:
@@ -237,6 +268,8 @@ class PlotPanel(QWidget):
             self.preprocessToggled.emit(enabled)
 
     def updateRawOverlay(self, frames: List[List[float]]):
+        if getattr(self, "_fallback_mode", False):
+            return
         if not self._realtime_preprocess_enabled:
             return
         if len(frames) != 4:
@@ -250,12 +283,15 @@ class PlotPanel(QWidget):
             sample_indices = list(range(int(values.shape[0])))
             self._raw_curves[idx].setData(values, sample_indices)
 
-    def _buildColorMap(self, positions: List[float], colors: List[List[int]]) -> pg.ColorMap:
+    def _buildColorMap(self, positions: List[float], colors: List[List[int]]) -> Any:
         positionArray = np.asarray(positions, dtype=np.float32)
         colorArray = np.asarray(colors, dtype=np.ubyte)
-        return pg.ColorMap(positionArray, colorArray)
+        colorMapFactory = getattr(pg, "ColorMap")
+        return colorMapFactory(positionArray, colorArray)
 
     def _setMModePlotRange(self, channelIdx: int, depth: int):
+        if getattr(self, "_fallback_mode", False):
+            return
         mModePlot = self._m_mode_plots[channelIdx]
         plotItem = mModePlot.getPlotItem()
         if plotItem is not None:
@@ -265,6 +301,8 @@ class PlotPanel(QWidget):
         mModePlot.setYRange(0, depth)
 
     def _resetMModeBuffers(self, depth: int):
+        if getattr(self, "_fallback_mode", False):
+            return
         depth = max(1, int(depth))
         self._current_sample_depths = [depth] * 4
         for idx in range(4):
@@ -277,6 +315,8 @@ class PlotPanel(QWidget):
             self._setMModePlotRange(idx, depth)
 
     def onConfigReady(self, configDict: dict):
+        if getattr(self, "_fallback_mode", False):
+            return
         scanFreqHz = int(configDict.get("scan_frequency_hz", self._scanFreqHz) or self._scanFreqHz)
         sampleDepth = int(configDict.get("sample_depth", self._mModeDefaultDepth) or self._mModeDefaultDepth)
 
@@ -295,6 +335,8 @@ class PlotPanel(QWidget):
 
     def _resize_m_mode_buffer(self, channel_idx: int, new_depth: int):
         """Dynamically adjust M-Mode buffer depth."""
+        if getattr(self, "_fallback_mode", False):
+            return
         old_buffer = self._m_mode_buffers[channel_idx]
         old_depth = old_buffer.shape[0]
 
@@ -313,6 +355,8 @@ class PlotPanel(QWidget):
 
     def _update_m_mode_levels(self, channel_idx: int):
         """Update color range based on robust percentiles to avoid saturation."""
+        if getattr(self, "_fallback_mode", False):
+            return
         buffer = self._m_mode_buffers[channel_idx]
         values = buffer.reshape(-1)
 
@@ -337,12 +381,18 @@ class PlotPanel(QWidget):
         self._m_mode_levels[channel_idx] = (new_low, new_high)
 
     def updatePlots(self, frames: List[List[float]]):
+        if getattr(self, "_fallback_mode", False):
+            return
         self._updatePlots(frames, direction=1)
 
     def updatePlaybackFrames(self, frames: List[List[float]], direction: int = 1):
+        if getattr(self, "_fallback_mode", False):
+            return
         self._updatePlots(frames, direction=direction)
 
     def _updatePlots(self, frames: List[List[float]], direction: int = 1):
+        if getattr(self, "_fallback_mode", False):
+            return
         if len(frames) != 4:
             return
 

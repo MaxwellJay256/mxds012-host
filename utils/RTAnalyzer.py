@@ -8,10 +8,24 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 from PyQt5.QtCore import QObject, pyqtSignal
 
-try:
-	import onnxruntime as ort  # type: ignore[import-not-found]
-except Exception:  # pragma: no cover - import availability depends on runtime env
-	ort = None
+_ORT_MODULE = None
+_ORT_IMPORT_ERROR = None
+
+
+def _get_onnxruntime():
+	global _ORT_MODULE, _ORT_IMPORT_ERROR
+	if _ORT_MODULE is not None:
+		return _ORT_MODULE
+	if _ORT_IMPORT_ERROR is not None:
+		raise RuntimeError(f"未安装 onnxruntime，请先安装后再使用在线识别: {_ORT_IMPORT_ERROR}")
+
+	try:
+		import onnxruntime as ort  # type: ignore[import-not-found]
+		_ORT_MODULE = ort
+		return _ORT_MODULE
+	except Exception as error:  # pragma: no cover - import availability depends on runtime env
+		_ORT_IMPORT_ERROR = error
+		raise RuntimeError(f"未安装 onnxruntime，请先安装后再使用在线识别: {error}") from error
 
 
 class RTAnalyzer(QObject):
@@ -65,8 +79,7 @@ class RTAnalyzer(QObject):
 			raise ValueError("模型类别为空")
 		if Path(model_path).suffix.lower() != ".onnx":
 			raise ValueError("仅支持 .onnx 模型")
-		if ort is None:
-			raise RuntimeError("未安装 onnxruntime，请先安装后再使用在线识别")
+		ort = _get_onnxruntime()
 
 		try:
 			session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])

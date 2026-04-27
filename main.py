@@ -4,7 +4,9 @@ MXDS012 Host - ADC data acquisition and visualization application.
 A thin entry point that creates and runs the main application window.
 All business logic is delegated to modules: serial_reader, protocol, plot_panel, recording_*.
 """
+import os
 import sys
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QFont
