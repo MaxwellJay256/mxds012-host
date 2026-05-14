@@ -15,6 +15,7 @@ class ModelMetadata:
     sampling_depth: int
     classes: List[str]
     num_classes: int
+    model_type: str
 
 
 def find_sidecar_json_path(model_path: str) -> Path:
@@ -54,6 +55,7 @@ def load_model_metadata(model_path: str) -> Tuple[ModelMetadata, List[str]]:
         raise ValueError("JSON 中 classes 为空")
 
     num_classes = int(payload.get("num_classes", len(classes)) or len(classes))
+    model_type = str(payload.get("model_type", "cbamlstm") or "cbamlstm").strip().lower()
 
     warnings: List[str] = []
     if num_classes != len(classes):
@@ -61,11 +63,16 @@ def load_model_metadata(model_path: str) -> Tuple[ModelMetadata, List[str]]:
             f"num_classes={num_classes} 与 classes 数量={len(classes)} 不一致，将以 classes 实际内容为准"
         )
 
+    if model_type not in {"cbamlstm", "cnn2d"}:
+        warnings.append(f"未知 model_type={model_type}，将回退为 cbamlstm")
+        model_type = "cbamlstm"
+
     metadata = ModelMetadata(
         model_path=str(onnx_path),
         json_path=str(json_path),
         sampling_depth=sampling_depth,
         classes=classes,
         num_classes=num_classes,
+        model_type=model_type,
     )
     return metadata, warnings

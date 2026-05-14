@@ -21,6 +21,10 @@ def _get_plt():
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
+        # Set font to SimSun (宋体) for all plots
+        plt.rcParams['font.sans-serif'] = ['SimSun', 'DejaVu Sans']
+        plt.rcParams['axes.unicode_minus'] = False
+
         _MATPLOTLIB_AVAILABLE = True
         _plt = plt
         return _plt
@@ -94,9 +98,9 @@ def plot_learning_curves(history: Dict[str, List[float]], save_path: str) -> Non
         plt.plot(epochs_train, train_loss, label="train_loss")
     if len(val_loss) > 0:
         plt.plot(epochs_val_loss, val_loss, label="val_loss")
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.title("Loss Curve")
+    plt.xlabel("Epoch", fontproperties='SimSun', fontsize=14)
+    plt.ylabel("Loss", fontproperties='SimSun', fontsize=14)
+    plt.title("Loss Curve", fontproperties='SimSun', fontsize=16)
     plt.grid(True, alpha=0.3)
     plt.legend()
 
@@ -105,9 +109,9 @@ def plot_learning_curves(history: Dict[str, List[float]], save_path: str) -> Non
         plt.plot(epochs_train, train_acc, label="train_acc")
     if len(val_acc) > 0:
         plt.plot(epochs_val_acc, val_acc, label="val_acc")
-    plt.xlabel("Epoch")
-    plt.ylabel("Accuracy")
-    plt.title("Accuracy Curve")
+    plt.xlabel("Epoch", fontproperties='SimSun', fontsize=14)
+    plt.ylabel("Accuracy", fontproperties='SimSun', fontsize=14)
+    plt.title("Accuracy Curve", fontproperties='SimSun', fontsize=16)
     plt.grid(True, alpha=0.3)
     plt.legend()
 
@@ -138,20 +142,20 @@ def plot_confusion_matrix(
 
     plt.figure(figsize=(10, 8), dpi=120)
     plt.imshow(cm, interpolation="nearest", cmap=plt.cm.Blues)
-    plt.title(title)
+    plt.title(title, fontproperties='SimSun', fontsize=16)
     plt.colorbar()
 
     tick_marks = np.arange(num_classes)
-    plt.xticks(tick_marks, class_names, rotation=90)
-    plt.yticks(tick_marks, class_names)
-    plt.ylabel("True label")
-    plt.xlabel("Predicted label")
+    plt.xticks(tick_marks, class_names, rotation=90, fontproperties='SimSun', fontsize=12)
+    plt.yticks(tick_marks, class_names, fontproperties='SimSun', fontsize=12)
+    plt.ylabel("True label", fontproperties='SimSun', fontsize=14)
+    plt.xlabel("Predicted label", fontproperties='SimSun', fontsize=14)
 
     for i in range(num_classes):
         for j in range(num_classes):
             val = cm[i, j]
             if val > 1e-3:
-                plt.text(j, i, f"{val:.2f}", ha="center", va="center", color="black", fontsize=8)
+                plt.text(j, i, f"{val:.2f}", ha="center", va="center", color="black", fontsize=10, fontproperties='SimSun')
 
     plt.tight_layout()
     _ensure_parent_dir(save_path)

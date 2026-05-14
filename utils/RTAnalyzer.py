@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
+from collections import Counter, deque
 
 import numpy as np
 from PyQt5.QtCore import QObject, pyqtSignal
@@ -51,13 +52,48 @@ class RTAnalyzer(QObject):
 		self._classes: List[str] = []
 		self._model_path = ""
 		self._expected_depth = 0
+		self._model_type = "cnn2d"
+		self._ema_alpha = 0.5
+		self._ema_probs: Optional[np.ndarray] = None
+		# Majority vote buffer
+		self._vote_window_size = 5
+		self._vote_buffer: deque = deque(maxlen=self._vote_window_size)
+		self._last_output_name: Optional[str] = None
 		self._last_warn_output_mismatch = False
 
 	def setEnabled(self, enabled: bool):
 		self._enabled = bool(enabled)
+		if not self._enabled:
+			self.resetEma()
 
 	def isEnabled(self) -> bool:
 		return self._enabled
+
+	def setEmaAlpha(self, alpha: float):
+		try:
+			value = float(alpha)
+		except (TypeError, ValueError):
+			value = 0.5
+		self._ema_alpha = max(0.0, min(1.0, value))
+
+	def setVoteWindowSize(self, n: int):
+		try:
+			value = int(n)
+		except (TypeError, ValueError):
+			value = 5
+		value = max(1, min(99, value))
+		self._vote_window_size = value
+		old = self._vote_buffer
+		self._vote_buffer = deque(list(old), maxlen=self._vote_window_size)
+
+	def getVoteWindowSize(self) -> int:
+		return int(self._vote_window_size)
+
+	def resetEma(self):
+		self._ema_probs = None
+		# also reset voting state
+		self._vote_buffer.clear()
+		self._last_output_name = None
 
 	def clearModel(self):
 		self._session = None
@@ -65,12 +101,16 @@ class RTAnalyzer(QObject):
 		self._classes = []
 		self._model_path = ""
 		self._expected_depth = 0
+		self._model_type = "cnn2d"
+		self._ema_probs = None
+		self._vote_buffer.clear()
+		self._last_output_name = None
 		self._last_warn_output_mismatch = False
 
 	def hasModel(self) -> bool:
 		return self._session is not None and bool(self._classes)
 
-	def loadModel(self, model_path: str, classes: Iterable[str], expected_depth: int = 0):
+	def loadModel(self, model_path: str, classes: Iterable[str], expected_depth: int = 0, model_type: str = "cbamlstm"):
 		model_path = str(model_path or "").strip()
 		class_list = [str(name).strip() for name in classes if str(name).strip()]
 		if not model_path:
@@ -95,6 +135,11 @@ class RTAnalyzer(QObject):
 		self._classes = class_list
 		self._model_path = model_path
 		self._expected_depth = max(0, int(expected_depth))
+		normalized_type = str(model_type).strip().lower()
+		if normalized_type not in {"cbamlstm", "cnn2d"}:
+			normalized_type = "cbamlstm"
+		self._model_type = normalized_type
+		self._ema_probs = None
 		self._last_warn_output_mismatch = False
 
 	def analyzeFrame(self, channels: List[List[float]]):
@@ -120,29 +165,72 @@ class RTAnalyzer(QObject):
 
 			aligned_probs = probabilities[:class_count]
 			aligned_classes = self._classes[:class_count]
+			smoothed_probs = self._smoothProbabilities(aligned_probs)
 
-			top_index = int(np.argmax(aligned_probs))
+			top_index = int(np.argmax(smoothed_probs))
 			top_name = aligned_classes[top_index]
-			top_prob = float(aligned_probs[top_index])
-			highlight = top_prob >= 0.5
+			top_prob = float(smoothed_probs[top_index])
 
 			probs_by_name: Dict[str, float] = {
 				name: float(prob)
-				for name, prob in zip(aligned_classes, aligned_probs)
+				for name, prob in zip(aligned_classes, smoothed_probs)
 			}
+
+			# Append current top to vote buffer and compute majority
+			try:
+				self._vote_buffer.append(top_name)
+			except Exception:
+				# ensure buffer exists
+				self._vote_buffer = deque([top_name], maxlen=self._vote_window_size)
+
+			counts = Counter(self._vote_buffer)
+			most_common_name, most_common_count = counts.most_common(1)[0]
+			threshold = (int(self._vote_window_size) + 1) // 2
+
+			if most_common_count >= threshold:
+				final_top_name = most_common_name
+			else:
+				# keep previous output if exists, otherwise use current top
+				if self._last_output_name is not None:
+					final_top_name = self._last_output_name
+				else:
+					final_top_name = top_name
+
+			self._last_output_name = final_top_name
+			final_top_prob = float(probs_by_name.get(final_top_name, top_prob))
+			highlight = final_top_prob >= 0.5
 
 			self.inferenceReady.emit(
 				{
 					"model_path": self._model_path,
 					"classes": list(aligned_classes),
 					"probabilities": probs_by_name,
-					"top_name": top_name,
-					"top_prob": top_prob,
+					"top_name": final_top_name,
+					"top_prob": final_top_prob,
 					"highlight": bool(highlight),
 				}
 			)
 		except Exception as error:
 			self.errorRaised.emit(f"在线识别失败: {error}")
+
+	def _smoothProbabilities(self, raw_probs: np.ndarray) -> np.ndarray:
+		"""
+		EMA 平滑概率值，适用于在线识别场景，能在一定程度上减少短时波动带来的误识别。
+		EMA 公式: ema_t = α * raw_t + (1 - α) * ema_{t-1}
+		"""
+		raw_probs = np.asarray(raw_probs, dtype=np.float32).reshape(-1)
+		if raw_probs.size == 0:
+			return raw_probs
+
+		if self._ema_probs is None or self._ema_probs.size != raw_probs.size:
+			self._ema_probs = raw_probs.astype(np.float32, copy=True)
+			return self._ema_probs.astype(np.float32, copy=True)
+
+		self._ema_probs = (
+			self._ema_alpha * raw_probs
+			+ (1.0 - self._ema_alpha) * self._ema_probs
+		).astype(np.float32, copy=False)
+		return self._ema_probs.astype(np.float32, copy=True)
 
 	def _buildInputTensor(self, channels: List[List[float]]) -> np.ndarray:
 		if not isinstance(channels, list) or len(channels) != 4:
@@ -162,6 +250,9 @@ class RTAnalyzer(QObject):
 			)
 
 		frame = np.stack(arrays, axis=0)
+		if self._model_type == "cnn2d":
+			# CNN2D 约定输入: (batch, c, h, w)
+			return frame.reshape(1, 1, 4, depth).astype(np.float32, copy=False)
 		# CBAMLSTM 约定输入: (batch, t_seq, c, h, w)
 		return frame.reshape(1, 1, 1, 4, depth).astype(np.float32, copy=False)
 

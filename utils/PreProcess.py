@@ -83,7 +83,7 @@ class RealtimePreprocessor:
 
 	def _buildTGC(self, depth: int) -> np.ndarray:
 		depth = max(1, int(depth))
-		m_depth = np.arange(depth, dtype=np.float32) * (self.params.inspectDepth_m / float(depth))
+		m_depth = np.arange(depth, dtype=np.float32) * (self.params.inspectDepth_m / float(depth))  # 
 		tgc = np.exp(self.params.tgcAlpha * self.params.burstToneFreqHz / 1e6 * m_depth * 100.0)
 		return tgc.astype(np.float32, copy=False)
 
@@ -132,7 +132,7 @@ class RealtimePreprocessor:
 		if len(set(depths)) != 1:
 			raise ValueError(f"Channel depth mismatch: {depths}")
 
-		depth = depths[0]
+		depth = depths[0]  # 所有通道深度相同，取第一个即可
 
 		tgc = self._buildTGC(depth)
 

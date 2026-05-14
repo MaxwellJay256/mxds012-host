@@ -47,6 +47,8 @@ class RealtimeAnalyzeWidget(QWidget):
     """Online analysis page for model selection and gesture class display."""
 
     MODEL_PATH_KEY = "Analysis/ModelPath"
+    EMA_ALPHA_KEY = "Analysis/EmaAlpha"
+    VOTE_WINDOW_KEY = "Analysis/VoteWindowSize"
     ONLINE_OUTPUT_DIR_KEY = "Analysis/OnlineTestOutputDir"
     ONLINE_ROUNDS_KEY = "Analysis/OnlineTestRounds"
     ONLINE_ACTIVE_SECONDS_KEY = "Analysis/OnlineTestActiveSeconds"
@@ -234,6 +236,12 @@ class RealtimeAnalyzeWidget(QWidget):
         self.connectionCard.stopButton.clicked.connect(self.stopSerialRequested.emit)
         self.paramCard.modelSelectRequested.connect(self._onSelectModel)
         self.paramCard.applyRequested.connect(self._onApplyConfigClicked)
+        self.paramCard.alphaChanged.connect(self._onEmaAlphaChanged)
+        self.paramCard.voteWindowChanged.connect(self._onVoteWindowChanged)
+        # Debug: print when vote window changes to verify handler and analyzer sync
+        self.paramCard.voteWindowChanged.connect(
+            lambda n: print(f"[DEBUG] voteWindowChanged signal: {int(n)} -> analyzer window now {self._analyzer.getVoteWindowSize()}")
+        )
         self.onlineTestOutputDirButton.clicked.connect(self._onSelectOnlineTestOutputDir)
         self.onlineTestStartButton.clicked.connect(self._onStartOnlineTest)
         self.onlineTestStopButton.clicked.connect(lambda: self.stopOnlineTest("在线测试已手动停止", level="warning"))
@@ -253,6 +261,15 @@ class RealtimeAnalyzeWidget(QWidget):
     def _loadSettings(self):
         saved_scan_freq = SettingService.value("Hardware/ScanFrequencyHz", 20, int)
         self.paramCard.setScanFrequency(int(saved_scan_freq))
+
+        ema_alpha = SettingService.value(self.EMA_ALPHA_KEY, 0.5, float)
+        self.paramCard.setEmaAlpha(float(ema_alpha))
+        self._analyzer.setEmaAlpha(self.paramCard.getEmaAlpha())
+
+        vote_window = SettingService.value(self.VOTE_WINDOW_KEY, 5, int)
+        self.paramCard.setVoteWindowSize(int(vote_window))
+        self._analyzer.setVoteWindowSize(int(self.paramCard.getVoteWindowSize()))
+        self._analyzer.setVoteWindowSize(self.paramCard.getVoteWindowSize())
 
         output_dir = SettingService.value(self.ONLINE_OUTPUT_DIR_KEY, "", str)
         if output_dir:
@@ -315,7 +332,13 @@ class RealtimeAnalyzeWidget(QWidget):
     def _loadModelAndUpdateUi(self, model_path: str, silent: bool):
         try:
             metadata, warnings = load_model_metadata(model_path)
-            self._analyzer.loadModel(metadata.model_path, metadata.classes, metadata.sampling_depth)
+            self._analyzer.loadModel(
+                metadata.model_path,
+                metadata.classes,
+                metadata.sampling_depth,
+                metadata.model_type,
+            )
+            self._analyzer.setEmaAlpha(self.paramCard.getEmaAlpha())
         except Exception as error:
             self.paramCard.setModelPath(model_path)
             self.paramCard.setSamplingDepth(None)
@@ -399,7 +422,6 @@ class RealtimeAnalyzeWidget(QWidget):
     def _onInferenceReady(self, payload: dict):
         probabilities = payload.get("probabilities", {})
         top_name = str(payload.get("top_name", "") or "")
-        raw_top_name = top_name
         top_prob = float(payload.get("top_prob", 0.0) or 0.0)
         if top_prob < 0.5:
             top_name = ""
@@ -407,9 +429,19 @@ class RealtimeAnalyzeWidget(QWidget):
 
         if self._onlineTestActive and self._onlineTestCollecting and self._onlineTestCurrentTarget:
             self._onlineTestCurrentTotalFrames += 1
-            if raw_top_name == self._onlineTestCurrentTarget:
+            if top_name == self._onlineTestCurrentTarget:
                 self._onlineTestCurrentCorrectFrames += 1
             self._refreshOnlineTestProgressLabel()
+
+    def _onEmaAlphaChanged(self, alpha: float):
+        value = max(0.0, min(1.0, float(alpha)))
+        self._analyzer.setEmaAlpha(value)
+        self._saveSetting(self.EMA_ALPHA_KEY, value)
+
+    def _onVoteWindowChanged(self, n: int):
+        value = max(1, min(99, int(n)))
+        self._analyzer.setVoteWindowSize(value)
+        self._saveSetting(self.VOTE_WINDOW_KEY, int(value))
 
     def _onSelectOnlineTestOutputDir(self):
         directory = QFileDialog.getExistingDirectory(self, "选择在线测试报告目录", "")

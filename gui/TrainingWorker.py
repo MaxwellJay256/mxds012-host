@@ -89,8 +89,10 @@ class TrainingWorker(QThread):
             device_name = self._config.get("device") or ("cuda" if torch.cuda.is_available() else "cpu")
             device = torch.device(str(device_name))
             self._log(f"使用设备: {device}")
+            model_type = str(self._config.get("model_type", "cnn2d")).strip().lower()
+            self._log(f"模型类型: {model_type}")
 
-            model = build_model(num_classes, device)
+            model = build_model(num_classes, device, model_type=model_type)
             criterion = nn.CrossEntropyLoss()
             optimizer = optim.Adam(model.parameters(), lr=float(self._config.get("lr", 1e-3)))
 
@@ -159,6 +161,7 @@ class TrainingWorker(QThread):
                     device=device,
                     optimizer=optimizer,
                     label_mapper=None,
+                    model_type=model_type,
                 )
                 history["train_loss"].append(float(train_loss))
                 history["train_acc"].append(float(train_acc))
@@ -171,6 +174,7 @@ class TrainingWorker(QThread):
                         device=device,
                         optimizer=None,
                         label_mapper=val_mapper,
+                        model_type=model_type,
                     )
                     history["val_loss"].append(float(val_loss))
                     history["val_acc"].append(float(val_acc))
@@ -201,6 +205,7 @@ class TrainingWorker(QThread):
                     loader=val_loader,
                     device=device,
                     label_mapper=val_mapper,
+                    model_type=model_type,
                 )
                 if y_true_val.size > 0:
                     save_confusion_matrix(
@@ -212,8 +217,13 @@ class TrainingWorker(QThread):
                     )
                     self._log(f"保存验证集混淆矩阵: {val_cm_path}")
 
-            export_onnx_model(model, onnx_path, device, depth)
-            metadata_path = export_onnx_metadata(onnx_path=onnx_path, depth=depth, classes=train_ds.classes)
+            export_onnx_model(model, onnx_path, device, depth, model_type=model_type)
+            metadata_path = export_onnx_metadata(
+                onnx_path=onnx_path,
+                depth=depth,
+                classes=train_ds.classes,
+                model_type=model_type,
+            )
             self._log(f"导出 ONNX: {onnx_path}")
             self._log(f"导出元数据: {metadata_path}")
 
@@ -227,6 +237,7 @@ class TrainingWorker(QThread):
                     device=device,
                     optimizer=None,
                     label_mapper=test_mapper,
+                    model_type=model_type,
                 )
                 self._log(f"测试集: loss={test_loss:.4f}, acc={test_acc:.4f}")
 
@@ -235,6 +246,7 @@ class TrainingWorker(QThread):
                     loader=test_loader,
                     device=device,
                     label_mapper=test_mapper,
+                    model_type=model_type,
                 )
                 if y_true_test.size > 0:
                     save_confusion_matrix(

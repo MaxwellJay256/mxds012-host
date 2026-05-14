@@ -12,8 +12,12 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from CBAMLSTMModel import CBAMLSTMNet
+from CNN2DStaticModel import CNN2DStaticModel
 from flat_us_dataset import DataFormatError, FlatUltrasoundDataset, SplitConfig
 from plot_utils import collect_labels_and_predictions, plot_confusion_matrix, plot_learning_curves
+
+
+SUPPORTED_MODEL_TYPES = ("cbamlstm", "cnn2d")
 
 
 def set_seed(seed: int) -> None:
@@ -23,11 +27,25 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def prepare_input(x: torch.Tensor) -> torch.Tensor:
-    # Dataset output shape is (B, 1, 4, depth); model expects (B, T, C, H, W).
+def prepare_input(x: torch.Tensor, model_type: str = "cbamlstm") -> torch.Tensor:
+    # Dataset output shape is (B, 1, 4, depth).
     if x.ndim != 4:
         raise ValueError(f"Expected input ndim=4, got shape={tuple(x.shape)}")
-    return x.unsqueeze(1).float()
+    normalized_type = str(model_type).strip().lower()
+    if normalized_type == "cbamlstm":
+        return x.unsqueeze(1).float()
+    if normalized_type == "cnn2d":
+        return x.float()
+    raise ValueError(f"Unknown model_type={model_type}, supported={SUPPORTED_MODEL_TYPES}")
+
+
+def build_model(num_classes: int, device: torch.device, model_type: str = "cbamlstm") -> nn.Module:
+    normalized_type = str(model_type).strip().lower()
+    if normalized_type == "cbamlstm":
+        return CBAMLSTMNet(num_classes=num_classes).to(device)
+    if normalized_type == "cnn2d":
+        return CNN2DStaticModel(num_classes=num_classes).to(device)
+    raise ValueError(f"Unknown model_type={model_type}, supported={SUPPORTED_MODEL_TYPES}")
 
 
 def build_label_mapper(
@@ -63,6 +81,7 @@ def run_epoch(
     device: torch.device,
     optimizer: Optional[optim.Optimizer] = None,
     label_mapper: Optional[torch.Tensor] = None,
+    model_type: str = "cbamlstm",
 ):
     train_mode = optimizer is not None
     model.train(train_mode)
@@ -72,7 +91,7 @@ def run_epoch(
     total_count = 0
 
     for x, y in loader:
-        x = prepare_input(x).to(device)
+        x = prepare_input(x, model_type=model_type).to(device)
         y = y.to(device).long()
 
         if label_mapper is not None:
@@ -138,9 +157,16 @@ def export_onnx_model(
     onnx_path: str,
     device: torch.device,
     depth: int,
+    model_type: str = "cbamlstm",
 ) -> None:
     model.eval()
-    dummy_input = torch.randn(1, 1, 1, 4, depth, device=device)
+    normalized_type = str(model_type).strip().lower()
+    if normalized_type == "cbamlstm":
+        dummy_input = torch.randn(1, 1, 1, 4, depth, device=device)
+    elif normalized_type == "cnn2d":
+        dummy_input = torch.randn(1, 1, 4, depth, device=device)
+    else:
+        raise ValueError(f"Unknown model_type={model_type}, supported={SUPPORTED_MODEL_TYPES}")
     # Initialize lazy parameters (e.g., LazyLinear) before ONNX tracing/export.
     with torch.no_grad():
         _ = model(dummy_input)
@@ -161,6 +187,7 @@ def export_onnx_metadata(
     onnx_path: str,
     depth: int,
     classes: list[str],
+    model_type: str = "cbamlstm",
 ) -> str:
     root, _ = os.path.splitext(onnx_path)
     json_path = f"{root}.json"
@@ -169,6 +196,7 @@ def export_onnx_metadata(
         "sampling_depth": int(depth),
         "classes": list(classes),
         "num_classes": len(classes),
+        "model_type": str(model_type).strip().lower(),
     }
 
     with open(json_path, "w", encoding="utf-8") as f:
@@ -199,6 +227,7 @@ def main() -> None:
     parser.add_argument("--export-onnx", action="store_true", help="Export best model to ONNX after training")
     parser.add_argument("--onnx-path", type=str, default="cbam_lstm_best.onnx", help="Output path for ONNX model")
     parser.add_argument("--plot-dir", type=str, default="plots", help="Directory to save training plots")
+    parser.add_argument("--model-type", type=str, default="cbamlstm", choices=list(SUPPORTED_MODEL_TYPES))
     args = parser.parse_args()
 
     device = torch.device(args.device)
@@ -256,7 +285,7 @@ def main() -> None:
         depth = int(train_ds[0][0].shape[-1])
     depth = int(depth)
 
-    model = CBAMLSTMNet(num_classes=num_classes).to(device)
+    model = build_model(num_classes=num_classes, device=device, model_type=args.model_type)
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
@@ -285,6 +314,7 @@ def main() -> None:
             device=device,
             optimizer=optimizer,
             label_mapper=None,
+            model_type=args.model_type,
         )
 
         if val_loader is not None:
@@ -295,6 +325,7 @@ def main() -> None:
                 device=device,
                 optimizer=None,
                 label_mapper=val_mapper,
+                model_type=args.model_type,
             )
             metric = val_acc
             print(
@@ -330,7 +361,7 @@ def main() -> None:
             model=model,
             loader=val_loader,
             device=device,
-            input_transform=prepare_input,
+            input_transform=lambda batch_x: prepare_input(batch_x, model_type=args.model_type),
             label_mapper=val_mapper,
         )
         if y_true_val.size > 0:
@@ -349,13 +380,14 @@ def main() -> None:
         onnx_dir = os.path.dirname(onnx_path)
         if onnx_dir:
             os.makedirs(onnx_dir, exist_ok=True)
-        export_onnx_model(model, onnx_path, device, depth)
+        export_onnx_model(model, onnx_path, device, depth, model_type=args.model_type)
         print(f"\n[export] onnx model saved -> {onnx_path}")
 
         metadata_path = export_onnx_metadata(
             onnx_path=onnx_path,
             depth=depth,
             classes=train_ds.classes,
+            model_type=args.model_type,
         )
         print(f"[export] metadata json saved -> {metadata_path}")
 
@@ -367,6 +399,7 @@ def main() -> None:
             device=device,
             optimizer=None,
             label_mapper=test_mapper,
+            model_type=args.model_type,
         )
         print(f"\n[test] loss={test_loss:.4f}, acc={test_acc:.4f}")
 
@@ -374,7 +407,7 @@ def main() -> None:
             model=model,
             loader=test_loader,
             device=device,
-            input_transform=prepare_input,
+            input_transform=lambda batch_x: prepare_input(batch_x, model_type=args.model_type),
             label_mapper=test_mapper,
         )
         if y_true_test.size > 0:

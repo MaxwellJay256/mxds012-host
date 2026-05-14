@@ -5,8 +5,8 @@ from __future__ import annotations
 from typing import Optional
 
 from PyQt5.QtCore import pyqtSignal
-from PyQt5.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout
-from qfluentwidgets import FluentIcon, HeaderCardWidget, LineEdit, PushButton, SpinBox
+from PyQt5.QtWidgets import QDoubleSpinBox, QHBoxLayout, QLabel, QVBoxLayout
+from qfluentwidgets import FluentIcon, HeaderCardWidget, LineEdit, PushButton, SpinBox, DoubleSpinBox
 
 
 class ClickableLineEdit(LineEdit):
@@ -20,6 +20,8 @@ class ClickableLineEdit(LineEdit):
 class AnalyzeParamCard(HeaderCardWidget):
     modelSelectRequested = pyqtSignal()
     applyRequested = pyqtSignal(int, int)
+    alphaChanged = pyqtSignal(float)
+    voteWindowChanged = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -66,6 +68,26 @@ class AnalyzeParamCard(HeaderCardWidget):
         self.sampleDepthEdit.setFixedWidth(140)
         config_row.addWidget(self.sampleDepthEdit)
 
+        self.emaAlphaLabel = QLabel("EMA α")
+        config_row.addWidget(self.emaAlphaLabel)
+
+        self.emaAlphaSpin = DoubleSpinBox(self)
+        self.emaAlphaSpin.setRange(0.0, 1.0)
+        self.emaAlphaSpin.setSingleStep(0.05)
+        self.emaAlphaSpin.setDecimals(2)
+        self.emaAlphaSpin.setValue(0.5)
+        self.emaAlphaSpin.setFixedWidth(120)
+        config_row.addWidget(self.emaAlphaSpin)
+
+        self.voteWindowLabel = QLabel("投票窗口 N")
+        config_row.addWidget(self.voteWindowLabel)
+
+        self.voteWindowSpin = SpinBox(self)
+        self.voteWindowSpin.setRange(1, 99)
+        self.voteWindowSpin.setValue(5)
+        self.voteWindowSpin.setFixedWidth(120)
+        config_row.addWidget(self.voteWindowSpin)
+
         self.applyButton = PushButton(FluentIcon.SEND, "应用")
         config_row.addWidget(self.applyButton)
         config_row.addStretch()
@@ -76,6 +98,8 @@ class AnalyzeParamCard(HeaderCardWidget):
         self.modelPathEdit.clicked.connect(self.modelSelectRequested.emit)
         self.modelBrowseButton.clicked.connect(self.modelSelectRequested.emit)
         self.applyButton.clicked.connect(self._onApplyClicked)
+        self.emaAlphaSpin.valueChanged.connect(lambda value: self.alphaChanged.emit(float(value)))
+        self.voteWindowSpin.valueChanged.connect(lambda value: self.voteWindowChanged.emit(int(value)))
 
     def setModelPath(self, path: str):
         self.modelPathEdit.setText(path or "")
@@ -99,6 +123,22 @@ class AnalyzeParamCard(HeaderCardWidget):
         except ValueError:
             depth = self._sampling_depth
         return max(0, int(depth))
+
+    def setEmaAlpha(self, alpha: float):
+        self.emaAlphaSpin.setValue(max(0.0, min(1.0, float(alpha))))
+
+    def getEmaAlpha(self) -> float:
+        return float(self.emaAlphaSpin.value())
+
+    def setVoteWindowSize(self, n: int):
+        try:
+            value = int(n)
+        except (TypeError, ValueError):
+            value = 5
+        self.voteWindowSpin.setValue(max(1, min(99, value)))
+
+    def getVoteWindowSize(self) -> int:
+        return int(self.voteWindowSpin.value())
 
     def _onApplyClicked(self):
         scan_freq_hz = int(self.scanFreqSpin.value())

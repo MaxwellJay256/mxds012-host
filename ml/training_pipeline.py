@@ -28,12 +28,17 @@ DataLoader = cast(Any, DataLoader)
 
 try:
     from .CBAMLSTMModel import CBAMLSTMNet
+    from .CNN2DStaticModel import CNN2DStaticModel
     from .flat_us_dataset import DEFAULT_GESTURE_ORDER, DataFormatError, FlatUltrasoundDataset, FlatUltrasoundParser, SplitConfig
     from .plot_utils import collect_labels_and_predictions, plot_confusion_matrix, plot_learning_curves
 except ImportError:  # pragma: no cover - allows running ml/main.py as a script
     from CBAMLSTMModel import CBAMLSTMNet
+    from CNN2DStaticModel import CNN2DStaticModel
     from flat_us_dataset import DEFAULT_GESTURE_ORDER, DataFormatError, FlatUltrasoundDataset, FlatUltrasoundParser, SplitConfig
     from plot_utils import collect_labels_and_predictions, plot_confusion_matrix, plot_learning_curves
+
+
+SUPPORTED_MODEL_TYPES = ("cbamlstm", "cnn2d")
 
 
 @dataclass
@@ -65,13 +70,18 @@ def set_seed(seed: int) -> None:
     getattr(getattr(torch, 'cuda'), 'manual_seed_all')(seed)
 
 
-def prepare_input(x: Any) -> Any:
-    """Dataset output shape is (B, 1, 4, depth); model expects (B, T, C, H, W)."""
+def prepare_input(x: Any, model_type: str = "cbamlstm") -> Any:
+    """Adapt dataset tensor shape to the selected model input contract."""
     if not _TORCH_AVAILABLE:
         raise RuntimeError("torch is required for model input preparation")
     if x.ndim != 4:
         raise ValueError(f"Expected input ndim=4, got shape={tuple(x.shape)}")
-    return x.unsqueeze(1).float()
+    normalized_type = str(model_type).strip().lower()
+    if normalized_type == "cbamlstm":
+        return x.unsqueeze(1).float()
+    if normalized_type == "cnn2d":
+        return x.float()
+    raise ValueError(f"Unknown model_type={model_type}, supported={SUPPORTED_MODEL_TYPES}")
 
 
 def build_label_mapper(
@@ -109,6 +119,7 @@ def run_epoch(
     device: Any,
     optimizer: Optional[Any] = None,
     label_mapper: Optional[Any] = None,
+    model_type: str = "cbamlstm",
 ):
     if not _TORCH_AVAILABLE:
         raise RuntimeError("torch is required for training")
@@ -120,7 +131,7 @@ def run_epoch(
     total_count = 0
 
     for x, y in loader:
-        x = prepare_input(x).to(device)
+        x = prepare_input(x, model_type=model_type).to(device)
         y = y.to(device).long()
 
         if label_mapper is not None:
@@ -198,11 +209,18 @@ def export_onnx_model(
     onnx_path: str,
     device: Any,
     depth: int,
+    model_type: str = "cbamlstm",
 ) -> None:
     if not _TORCH_AVAILABLE:
         raise RuntimeError("torch is required to export ONNX models")
     model.eval()
-    dummy_input = getattr(torch, 'randn')(1, 1, 1, 4, depth, device=device)
+    normalized_type = str(model_type).strip().lower()
+    if normalized_type == "cbamlstm":
+        dummy_input = getattr(torch, 'randn')(1, 1, 1, 4, depth, device=device)
+    elif normalized_type == "cnn2d":
+        dummy_input = getattr(torch, 'randn')(1, 1, 4, depth, device=device)
+    else:
+        raise ValueError(f"Unknown model_type={model_type}, supported={SUPPORTED_MODEL_TYPES}")
     with getattr(torch, 'no_grad')():
         _ = model(dummy_input)
 
@@ -222,6 +240,7 @@ def export_onnx_metadata(
     onnx_path: str,
     depth: int,
     classes: Sequence[str],
+    model_type: str = "cbamlstm",
 ) -> str:
     root, _ = os.path.splitext(onnx_path)
     json_path = f"{root}.json"
@@ -230,6 +249,7 @@ def export_onnx_metadata(
         "sampling_depth": int(depth),
         "classes": list(classes),
         "num_classes": len(classes),
+        "model_type": str(model_type).strip().lower(),
     }
 
     with open(json_path, "w", encoding="utf-8") as f:
@@ -265,6 +285,7 @@ def collect_predictions(
     loader: Any,
     device: Any,
     label_mapper: Optional[Any] = None,
+    model_type: str = "cbamlstm",
 ) -> tuple[np.ndarray, np.ndarray]:
     if not _TORCH_AVAILABLE:
         raise RuntimeError("torch is required to collect predictions")
@@ -272,12 +293,17 @@ def collect_predictions(
         model=model,
         loader=loader,
         device=device,
-        input_transform=prepare_input,
+        input_transform=lambda batch_x: prepare_input(batch_x, model_type=model_type),
         label_mapper=label_mapper,
     )
 
 
-def build_model(num_classes: int, device: Any) -> Any:
+def build_model(num_classes: int, device: Any, model_type: str = "cbamlstm") -> Any:
     if not _TORCH_AVAILABLE:
         raise RuntimeError("torch is required to build the model")
-    return CBAMLSTMNet(num_classes=num_classes).to(device)
+    normalized_type = str(model_type).strip().lower()
+    if normalized_type == "cbamlstm":
+        return CBAMLSTMNet(num_classes=num_classes).to(device)
+    if normalized_type == "cnn2d":
+        return CNN2DStaticModel(num_classes=num_classes).to(device)
+    raise ValueError(f"Unknown model_type={model_type}, supported={SUPPORTED_MODEL_TYPES}")
